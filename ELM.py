@@ -2,6 +2,13 @@
 
 # helper functions
 def sigmoid(x, c1=1, c2=0):
+    x = np.float64(x)
+
+    # approximate to the value since float can't handle
+    if c1*(x-c2) > 100:
+        return 1
+    elif c1*(x-c2) < -100:
+        return 0
     return 1 / (1 + np.exp(-c1*(x-c2)))
 
 def to2D(arr):
@@ -28,11 +35,17 @@ class ELMclf:
         self.hidden_mat = None
 
         self.random_state = random_state
+        self.rng = np.random.default_rng(random_state)
 
-    def fit(self, X, y):
-        i,b = self._init_weights(X.shape[1])
-        self.weights_i = i
-        self.biases = b
+    def fit(self, X, y, weights_i=None, biases=None):
+        if weights_i is not None:
+            self.weights_i = weights_i
+        else:
+            self.weights_i = self._init_input_weights(X.shape[1])
+        if biases is not None:
+            self.biases = biases
+        else:
+            self.biases = self._init_biases()
 
         H = self._obtain_H(X)
         self.hidden_mat = H
@@ -46,11 +59,17 @@ class ELMclf:
         out_threshold = out_net
 
         # this assumes binary label of 0 and 1
-        # out_threshold = np.vectorize(self.activation)(out_threshold, 1, 0.5) # for sigmoid
+        out_threshold = np.vectorize(self.activation)(out_threshold, 1, 0.5) # for sigmoid
         out_threshold[out_threshold > 0.5] = 1
         out_threshold[out_threshold <= 0.5] = 0
-        # out_rounded = np.round(out_net) # round the
-        # out_rounded[out_rounded == -0] = 0 # convert all zeros to +0
+        # out_threshold[out_threshold == -0] = 0 # convert all zeros to +0
+        return out_threshold
+
+    def predict_proba(self, X):
+        # only one output node for binary
+        out_net = np.matmul(self._obtain_H(X),self.weights_o)
+        out_threshold = out_net
+        out_threshold[out_net <= 0.5] = 1 - out_threshold[out_net <= 0.5]
         return out_threshold
 
     def score(self, X, y):
@@ -58,18 +77,22 @@ class ELMclf:
         return np.mean(predictions == to2D(y))
 
 
-    def _init_weights(self, x_size):
+    def _init_input_weights(self, x_size):
         """
-        :param x_size: input nodes size
-        :returns: input_weights, biases
+        :param x_size: input nodes size (uses feature size)
+        :returns: input_weights
         """
-        # Randomise weights currently, because idk how
-        rng = np.random.default_rng(self.random_state)
-        input_weights = rng.random((self.n, x_size))
-        bias_weights = rng.random(self.n)
-        # self.weights_i = input_weights # set at fit
-        # self.biases = bias_weights # set at fit
-        return input_weights, bias_weights
+        # rng = np.random.default_rng(self.random_state)
+        input_weights = self.rng.random((self.n, x_size))
+        return input_weights
+
+    def _init_biases(self):
+        """
+        :returns: biases
+        """
+        # rng = np.random.default_rng(self.random_state)
+        bias_weights = self.rng.random(self.n)
+        return bias_weights
 
         # random.seed()  # reset seed after operation
 
