@@ -20,6 +20,7 @@ class ELMclf:
     Random initialisation of input weights and biases are removed, but can be inserted manually.
     Defaults sigmoid activation function
     FIXME: currently it seems like y must be 2D, consider whether to include in doc or change code
+    FIXME: the current sigmoid function is ruining things (mainly probability), try resolving this when possible
     :param n: hidden layer neurons size
     :var weights_i: array of input weights for each neuron, in range [0,1]
     :var weights_o: array of output weights for each output node
@@ -30,14 +31,16 @@ class ELMclf:
         self.weights_i = None  # input weights, W
         self.weights_o = None  # hidden layer weight, beta
         self.biases = None  # biases for input_weights, b
-        self.activation = sigmoid
+        self.activation = lambda x: sigmoid(x, 1, 0)
         # Currently default using sigmoid function
         self.hidden_mat = None
 
         self.random_state = random_state
-        self.rng = np.random.default_rng(random_state)
+        self.rng = None # update on fit
 
     def fit(self, X, y, weights_i=None, biases=None):
+        # ensure that rng is reset for every new fit
+        self.rng = np.random.default_rng(self.random_state)
         if weights_i is not None:
             self.weights_i = weights_i
         else:
@@ -57,9 +60,10 @@ class ELMclf:
     def predict(self, X):
         out_net = np.matmul(self._obtain_H(X),self.weights_o)
         out_threshold = out_net
+        # print(out_net)
 
         # this assumes binary label of 0 and 1
-        out_threshold = np.vectorize(self.activation)(out_threshold, 1, 0.5) # for sigmoid
+        # out_threshold = np.vectorize(self.activation)(out_threshold) # for sigmoid
         out_threshold[out_threshold > 0.5] = 1
         out_threshold[out_threshold <= 0.5] = 0
         # out_threshold[out_threshold == -0] = 0 # convert all zeros to +0
@@ -69,7 +73,13 @@ class ELMclf:
         # only one output node for binary
         out_net = np.matmul(self._obtain_H(X),self.weights_o)
         out_threshold = out_net
-        out_threshold[out_net <= 0.5] = 1 - out_threshold[out_net <= 0.5]
+        # print(np.min(out_net),np.max(out_net))
+
+        out_threshold = np.vectorize(self.activation)(out_threshold)  # for sigmoid
+        # print(np.round(out_threshold, decimals=2))
+        # print(np.max(np.round(out_threshold, decimals=2)))
+        # print(np.min(np.round(out_threshold, decimals=2)))
+        out_threshold[out_threshold <= 0.5] = 1 - out_threshold[out_threshold <= 0.5]
         return out_threshold
 
     def score(self, X, y):
