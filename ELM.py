@@ -1,7 +1,7 @@
 ﻿import numpy as np
 
 # helper functions
-def sigmoid(x, c1=1, c2=0):
+def sigmoid(x:float, c1:float=1, c2:float=0) -> int:
     x = np.float64(x)
 
     # approximate to the value since float can't handle
@@ -11,7 +11,7 @@ def sigmoid(x, c1=1, c2=0):
         return 0
     return 1 / (1 + np.exp(-c1*(x-c2)))
 
-def to2D(arr):
+def to2D(arr:np.ndarray):
     return arr.reshape(-1, 1) if arr.ndim < 2 else arr
 
 # Defining ELM
@@ -26,7 +26,7 @@ class ELMclf:
     :var weights_o: array of output weights for each output node
     :var biases: array of biases (n biases) for neuron, no bias for output nodes
     """
-    def __init__(self, n, random_state=None):
+    def __init__(self, n:int, random_state:int=None):
         self.n = n  # number of hidden nodes, N_tilde
         self.weights_i = None  # input weights, W
         self.weights_o = None  # hidden layer weight, beta
@@ -38,7 +38,7 @@ class ELMclf:
         self.random_state = random_state
         self.rng = None # update on fit
 
-    def fit(self, X, y, weights_i=None, biases=None):
+    def fit(self, X:np.ndarray, y:np.ndarray, weights_i:np.ndarray=None, biases:np.ndarray=None):
         # ensure that rng is reset for every new fit
         self.rng = np.random.default_rng(self.random_state)
         if weights_i is not None:
@@ -57,7 +57,7 @@ class ELMclf:
         self.weights_o = beta
         return self
 
-    def predict(self, X):
+    def predict(self, X:np.ndarray):
         out_net = np.matmul(self._obtain_H(X),self.weights_o)
         out_threshold = out_net
         # print(out_net)
@@ -69,11 +69,11 @@ class ELMclf:
         # out_threshold[out_threshold == -0] = 0 # convert all zeros to +0
         return out_threshold
 
-    def predict_proba(self, X):
+    def predict_proba(self, X:np.ndarray):
         # only one output node for binary
         out_net = np.matmul(self._obtain_H(X),self.weights_o)
         out_threshold = out_net
-        # print(np.min(out_net),np.max(out_net))
+        print(np.min(out_net),np.max(out_net))
 
         out_threshold = np.vectorize(self.activation)(out_threshold)  # for sigmoid
         # print(np.round(out_threshold, decimals=2))
@@ -82,18 +82,19 @@ class ELMclf:
         out_threshold[out_threshold <= 0.5] = 1 - out_threshold[out_threshold <= 0.5]
         return out_threshold
 
-    def score(self, X, y):
+    def score(self, X:np.ndarray, y:np.ndarray):
         predictions = self.predict(X)
         return np.mean(predictions == to2D(y))
 
 
-    def _init_input_weights(self, x_size):
+    def _init_input_weights(self, x_size:int):
         """
         :param x_size: input nodes size (uses feature size)
         :returns: input_weights
         """
         # rng = np.random.default_rng(self.random_state)
-        input_weights = self.rng.random((self.n, x_size))
+        # input_weights = self.rng.random((self.n, x_size))
+        input_weights = self.rng.uniform(-1,1,size=(self.n,x_size)) # Originally using 0-1
         return input_weights
 
     def _init_biases(self):
@@ -101,12 +102,13 @@ class ELMclf:
         :returns: biases
         """
         # rng = np.random.default_rng(self.random_state)
-        bias_weights = self.rng.random(self.n)
+        # bias_weights = self.rng.random(self.n)
+        bias_weights = self.rng.uniform(-1,1,size=self.n)
         return bias_weights
 
         # random.seed()  # reset seed after operation
 
-    def _obtain_H(self, x_train):
+    def _obtain_H(self, x_train:np.ndarray):
         """
         calculate the hidden layer output matrix, g(w.x+b) for size N x N_tilde
         :param x_train: instances to be trained, expects x_train of 'x_size' number of features
@@ -132,7 +134,7 @@ class ELMclf:
         return H
 
     @staticmethod
-    def _obtain_beta(y_train, H):
+    def _obtain_beta(y_train:np.ndarray, H:np.ndarray):
         """
         Getting output weights (which is beta), using Singular Value Decomposition
         :param y_train: or targets to match each x_train, expects n_sample of 0 and 1 for binary classification
