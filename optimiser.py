@@ -217,10 +217,12 @@ class ABCOptimiser(Optimiser):
             for i in indexes:
                 second_solution = rng.choice(solutions[indexes != i])
                 v: dict = self.neighbourhood_gen(solutions[i], second_solution, current_iter)
-                # print("Neighbour: ", v)
-                start_fitness = time.time()
+                # Skip if Si is same as Vi
+                if np.all(as_solution(v) == solutions[i]):
+                    trials[i] += 1
+                    # print(f'\t{i} Employed: Literally the same')
+                    continue
                 v_score = self.compute_fitness(v,i)
-                # if self.verbose: print(f"\tFitness {i}: {start_fitness - start_time:.4f}")
                 # replace Si if Vi is better
                 if v_score > scores[i]:
                     solutions[i] = as_solution(v)
@@ -240,6 +242,10 @@ class ABCOptimiser(Optimiser):
                 solution = solutions[solution_idx]
                 second_solution = rng.choice(solutions[indexes != solution_idx]) # select solutions excluding itself
                 v: dict = self.neighbourhood_gen(solution, second_solution, current_iter)
+                if np.all(as_solution(v) == solutions[i]):
+                    trials[i] += 1
+                    # print(f'\t{i} Onlooker: Literally the same')
+                    continue
                 v_score = self.compute_fitness(v,i)
                 # Replace Si if Vi is better
                 if v_score > scores[solution_idx]:
@@ -252,11 +258,12 @@ class ABCOptimiser(Optimiser):
             # Scout bee process, find new source if score is not improving
             for i in indexes:
                 if trials[i] > self.TRIAL_LIMIT-1:
-                    solutions[i] = as_solution(
+                    # if self.verbose: print(f'\t{i}: Update its solution')
+                    solutions[i] = copy.deepcopy(as_solution(
                         Optimiser.population_generation(
-                            1, self.POPULATION_TEMPLATE, self.POPULATION_LIMIT, self.random_state
+                            1, self.POPULATION_TEMPLATE, self.POPULATION_LIMIT, int(rng.uniform(1, 4294967295))
                         )[0]
-                    )
+                    ))
                     trials[i] = 0
 
             # Save current best solution
@@ -264,10 +271,10 @@ class ABCOptimiser(Optimiser):
             # if self.verbose: print(f"\tCurrent highest score: {scores[current_best_idx]}")
 
             if scores[current_best_idx] > self.best_score:
-                if self.verbose: print(f"\tUpdated score: {scores[current_best_idx]}")
                 self.best_individual = copy.deepcopy(as_params(solutions[current_best_idx], self.PARAM_DIMS))
                 self.best_idx = int(current_best_idx)
-                if self.verbose: print(f'Best score: {self.compute_fitness(self.best_individual,self.best_idx)}, idx: {self.best_idx}')
+                if self.verbose: print(f"\tUpdated score: {scores[current_best_idx]}, idx: {current_best_idx}")
+                if self.verbose: print(f'\tBest score: {self.compute_fitness(self.best_individual,self.best_idx)}, idx: {self.best_idx}')
                 # self.best_solution = solutions[current_best_idx]
                 self.best_score = copy.deepcopy(scores[current_best_idx])
 
@@ -298,9 +305,6 @@ class ABCOptimiser(Optimiser):
             raise Exception("Param keys are not equal to the range keys given while clipping.")
 
         return {key: np.clip(params[key], value[0], value[1]) for key, value in ranges.items()}
-
-
-
         
     @staticmethod
     def get_p_copy(curr_iter: int, max_iter: int, min_copy, max_copy):
@@ -335,18 +339,22 @@ if __name__ == '__main__':
     opti = GAOptimiser(elm, x_train.to_numpy(), y_train.to_numpy(), x_test.to_numpy(), y_test.to_numpy(), fitness_fn=accuracy_score, random_state=42)
     ori_preci = precision_score(y_test, elm.predict(x_test.to_numpy()))
     print(f'original precision: {ori_preci:.4f}')
+    print(f'original f1: {f1_score(y_test, elm.predict(x_test.to_numpy())):.4f}')
     print(confusion_matrix(y_test, elm.predict(x_test.to_numpy())))
 
     # print(np.concat((as_solution(popu[0]).reshape(1,-1), as_solution(popu[1]).reshape(1,-1))).shape)
     # opti.generation_loop(popu, 10)
     # opti.score()
     abc.set_verbose(True)
-    abc.fit(popu, {'weights_i': (0,1), 'biases': (0,1)}, max_iter=20)
+    best_param = abc.fit(popu, {'weights_i': (0,1), 'biases': (0,1)}, max_iter=1000, trial_limit=100)
+    print(np.all(best_param == abc.best_individual), abc.best_idx)
+    # print(abc.compute_fitness(abc.best_individual,abc.best_idx))
+    abc.score()
     abc.score()
 
     # clf = ELMclf(n, random_state=42)
-    # clf.fit(x_train.to_numpy(), y_train.to_numpy(), **opti.get_best_param())
+    # clf.fit(x_train.to_numpy(), y_train.to_numpy(), **best_param)
     # test_pred = clf.predict(x_test.to_numpy())
     # print('Precision score: ', precision_score(y_test, test_pred))
-    # print(confusion_matrix(y_test, elm.predict(x_test.to_numpy())))
+    # print(confusion_matrix(y_test, clf.predict(x_test.to_numpy())))
     # opti.score(lambda y,y_pred: precision_score(y, y_pred, average='binary', zero_division=0))

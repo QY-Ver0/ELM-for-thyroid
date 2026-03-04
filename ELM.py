@@ -1,16 +1,18 @@
 ﻿import numpy as np
 
 # helper functions
-def sigmoid(x:float, c1:float=1, c2:float=0) -> int:
-    x = np.float64(x)
+# def sigmoid(x:float, c1:float=1, c2:float=0) -> int:
+#     x = np.float64(x)
+#
+#     # approximate to the value since float can't handle
+#     if c1*(x-c2) > 100:
+#         return 1
+#     elif c1*(x-c2) < -100:
+#         return 0
+#     return 1 / (1 + np.exp(-c1*(x-c2)))
 
-    # approximate to the value since float can't handle
-    if c1*(x-c2) > 100:
-        return 1
-    elif c1*(x-c2) < -100:
-        return 0
-    return 1 / (1 + np.exp(-c1*(x-c2)))
-
+def sigmoid(x, c1=1, c2=0):
+    return np.divide(1, np.add(1, np.exp(np.multiply(-c1, np.subtract(x, c2)))))
 def to2D(arr:np.ndarray):
     return arr.reshape(-1, 1) if arr.ndim < 2 else arr
 
@@ -20,7 +22,6 @@ class ELMclf:
     Random initialisation of input weights and biases are removed, but can be inserted manually.
     Defaults sigmoid activation function
     FIXME: currently it seems like y must be 2D, consider whether to include in doc or change code
-    FIXME: the current sigmoid function is ruining things (mainly probability), try resolving this when possible
     :param n: hidden layer neurons size
     :var weights_i: array of input weights for each neuron, in range [0,1]
     :var weights_o: array of output weights for each output node
@@ -40,12 +41,20 @@ class ELMclf:
 
     def fit(self, X:np.ndarray, y:np.ndarray, weights_i:np.ndarray=None, biases:np.ndarray=None):
         # ensure that rng is reset for every new fit
+        weights_changed = weights_i is not None and np.any(weights_i != self.weights_i)
+        biases_changed = biases is not None and np.any(biases != self.biases)
+
+        # IF nothing important changed (if no external modification), why refit
+        # without this, something weird happens in the training, and I do not know why
+        if self.weights_i is not None and self.biases is not None and not weights_changed and not biases_changed:
+            return self
         self.rng = np.random.default_rng(self.random_state)
-        if weights_i is not None:
+
+        if weights_changed:
             self.weights_i = weights_i
         else:
             self.weights_i = self._init_input_weights(X.shape[1])
-        if biases is not None:
+        if biases_changed:
             self.biases = biases
         else:
             self.biases = self._init_biases()
@@ -120,18 +129,30 @@ class ELMclf:
         if n_features != expected_n_features:
             raise Exception(f'Number of features does not match previously declared value: {expected_n_features}')
 
-        # First substep of H: w.x
-        f = lambda i,j: np.dot(self.weights_i[int(j)], x_train[int(i)])
-        H = np.fromfunction(np.vectorize(f), (n_samples, self.n), dtype=self.weights_i.dtype)
-        # print(H.shape)
-
-        # Second substep: w.x + b
-        H += self.biases
+        # First substep of H: w.x + b
+        H = x_train @ self.weights_i.T + self.biases
 
         # Finally, apply activation function, g(w.x + b)
-        H = np.vectorize(self.activation)(H)
+        H = self.activation(H)
         # self.hidden_mat = H # set at fit
         return H
+
+    def _update_H(self, x_train:np.ndarray, prev_input_weights:np.ndarray, prev_biases:np.ndarray):
+        """
+        ONLY WORKS IF X IS SAME (which can't be checked)
+        :param x_train:
+        :param prev_input_weights:
+        :param prev_biases:
+        :return:
+        """
+        n_samples = x_train.shape[0]  # N
+        n_features = x_train.shape[1]  # x_size of init_weights
+        expected_n_features = self.weights_i.shape[1]  # previously declared
+        if n_features != expected_n_features:
+            raise Exception(f'Number of features does not match previously declared value: {expected_n_features}')
+        # First substep of H: w.x
+        f = lambda i, j: np.dot(self.weights_i[int(j)], x_train[int(i)])
+        H = np.fromfunction(np.vectorize(f), (n_samples, self.n), dtype=self.weights_i.dtype)
 
     @staticmethod
     def _obtain_beta(y_train:np.ndarray, H:np.ndarray):
