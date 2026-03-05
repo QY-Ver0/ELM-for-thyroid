@@ -32,6 +32,7 @@ class ELMclf:
         self.weights_i = None  # input weights, W
         self.weights_o = None  # hidden layer weight, beta
         self.biases = None  # biases for input_weights, b
+        self.l2_param = None
         self.activation = lambda x: sigmoid(x, 1, 0)
         # Currently default using sigmoid function
         self.hidden_mat = None
@@ -39,7 +40,7 @@ class ELMclf:
         self.random_state = random_state
         self.rng = None # update on fit
 
-    def fit(self, X:np.ndarray, y:np.ndarray, weights_i:np.ndarray=None, biases:np.ndarray=None):
+    def fit(self, X:np.ndarray, y:np.ndarray, l2_param:float=0, weights_i:np.ndarray=None, biases:np.ndarray=None):
         # ensure that rng is reset for every new fit
         weights_changed = weights_i is not None and np.any(weights_i != self.weights_i)
         biases_changed = biases is not None and np.any(biases != self.biases)
@@ -50,19 +51,16 @@ class ELMclf:
             return self
         self.rng = np.random.default_rng(self.random_state)
 
-        if weights_changed:
-            self.weights_i = weights_i
-        else:
-            self.weights_i = self._init_input_weights(X.shape[1])
-        if biases_changed:
-            self.biases = biases
-        else:
-            self.biases = self._init_biases()
+        if weights_changed: self.weights_i = weights_i
+        else              : self.weights_i = self._init_input_weights(X.shape[1])
+        if biases_changed: self.biases = biases
+        else             : self.biases = self._init_biases()
+        self.l2_param = l2_param
 
         H = self._obtain_H(X)
         self.hidden_mat = H
 
-        beta = self._obtain_beta(y, H)
+        beta = ELMclf._obtain_beta(y, H, l2_param)
         self.weights_o = beta
         return self
 
@@ -155,9 +153,10 @@ class ELMclf:
         H = np.fromfunction(np.vectorize(f), (n_samples, self.n), dtype=self.weights_i.dtype)
 
     @staticmethod
-    def _obtain_beta(y_train:np.ndarray, H:np.ndarray):
+    def _obtain_beta(y_train:np.ndarray, H:np.ndarray, l2_param:float=0):
         """
         Getting output weights (which is beta), using Singular Value Decomposition
+        If l2_regularisation parameter used (!= 0):, then only apply that
         :param y_train: or targets to match each x_train, expects n_sample of 0 and 1 for binary classification
         :param H: the hidden layer output matrix
         :return: output weights, which is also stored in object
@@ -171,10 +170,25 @@ class ELMclf:
         # Update y_train if it is 1D to fit the formula
         y_train_dup = to2D(y_train)
 
-        # Obtain Moore-Penrose generalised inverse
-        H_plus = np.linalg.pinv(H)
+        # Either (H^+)T or ((lambda.I + (H^T)H)^+)(H^T)T
+        if l2_param == 0:
+            # Obtain Moore-Penrose generalised inverse
+            H_plus = np.linalg.pinv(H)
 
-        # Calculate output weights
-        output_weights = np.matmul(H_plus, y_train_dup)
-        # self.weights_o = output_weights # set at fit
+            # Calculate output weights
+            output_weights = np.matmul(H_plus, y_train_dup)
+            # self.weights_o = output_weights # set at fit
+        else:
+            H_transpose = H.T
+            # use the method that makes algo faster
+            # if shorter width (H^T)(H) is larger than (H)(H^T),
+            # then use (H^T)((lambda.I + H(H^T))^+)T
+            if H.shape[0] < H.shape[1]:
+                ridge_mat = l2_param * np.identity(H.shape[0]) + H @ H_transpose
+                inv_ridge_mat = np.linalg.pinv(ridge_mat)
+                output_weights = H_transpose @ inv_ridge_mat @ y_train_dup
+            else:
+                ridge_mat = l2_param * np.identity(H.shape[1]) + H_transpose @ H
+                inv_ridge_mat = np.linalg.pinv(ridge_mat)
+                output_weights = inv_ridge_mat @ H_transpose @ y_train_dup
         return output_weights

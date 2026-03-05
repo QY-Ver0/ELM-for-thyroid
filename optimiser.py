@@ -203,7 +203,7 @@ class ABCOptimiser(Optimiser):
         SN, D = solutions.shape
         indexes = np.arange(SN)
 
-
+        total_time = 0.
         trials = [0] * SN
         for current_iter in range(max_iter+1):
             # only use current_iter of 1 to max_iter (inclusive)
@@ -218,14 +218,15 @@ class ABCOptimiser(Optimiser):
                 second_solution = rng.choice(solutions[indexes != i])
                 v: dict = self.neighbourhood_gen(solutions[i], second_solution, current_iter)
                 # Skip if Si is same as Vi
-                if np.all(as_solution(v) == solutions[i]):
+                v_solution = as_solution(v)
+                if np.all(v_solution == solutions[i]):
                     trials[i] += 1
                     # print(f'\t{i} Employed: Literally the same')
                     continue
                 v_score = self.compute_fitness(v,i)
                 # replace Si if Vi is better
                 if v_score > scores[i]:
-                    solutions[i] = as_solution(v)
+                    solutions[i] = v_solution
                     scores[i] = v_score
                     trials[i] = 0
                 else:
@@ -237,19 +238,21 @@ class ABCOptimiser(Optimiser):
             fitness_sum = np.sum(scores)
             selection_probability = np.divide(scores, fitness_sum)
             # Onlooker bee process
+            second_solutions = [rng.choice(solutions[indexes != i]) for i in indexes]
             for i in indexes:
                 solution_idx = rng.choice(indexes, p=selection_probability)
-                solution = solutions[solution_idx]
-                second_solution = rng.choice(solutions[indexes != solution_idx]) # select solutions excluding itself
-                v: dict = self.neighbourhood_gen(solution, second_solution, current_iter)
-                if np.all(as_solution(v) == solutions[i]):
+                # solution = solutions[solution_idx]
+                # second_solution = rng.choice(solutions[indexes != solution_idx]) # select solutions excluding itself
+                v: dict = self.neighbourhood_gen(solutions[i], second_solutions[i], current_iter)
+                v_solution = as_solution(v)
+                if np.all(v_solution == solutions[i]):
                     trials[i] += 1
                     # print(f'\t{i} Onlooker: Literally the same')
                     continue
                 v_score = self.compute_fitness(v,i)
                 # Replace Si if Vi is better
                 if v_score > scores[solution_idx]:
-                    solutions[solution_idx] = as_solution(v)
+                    solutions[solution_idx] = v_solution
                     scores[solution_idx] = v_score
                     trials[i] = 0
                 else:
@@ -279,10 +282,11 @@ class ABCOptimiser(Optimiser):
                 self.best_score = copy.deepcopy(scores[current_best_idx])
 
             end_time = time.time()
-            if self.verbose: print(f'Iter {current_iter}/{max_iter}: {end_time - start_time:.4f} seconds')
+            total_time += end_time - start_time
+            if self.verbose: print(f'Iter {current_iter}/{max_iter}: {end_time - start_time:.4f} seconds   \t Average time: {total_time / current_iter:.4f} seconds')
 
-        # if self.verbose: print(f'Best score recorded: {self.best_score}, idx: {self.best_idx}')
-        if self.verbose: print(f'Best score: {self.compute_fitness(self.best_individual,self.best_idx)}, idx: {self.best_idx}')
+        if self.verbose: print(f'Best score recorded: {self.best_score}, at idx: {self.best_idx}, total time: {total_time:.4f} seconds')
+        # if self.verbose: print(f'Best score: {self.compute_fitness(self.best_individual,self.best_idx)}, idx: {self.best_idx}, ')
         return self.best_individual
     def neighbourhood_gen(self, solution: np.ndarray, solution_k: np.ndarray, curr_iter: int):
         """
@@ -332,8 +336,10 @@ if __name__ == '__main__':
     elm = ELMclf(n, random_state=42)
     elm.fit(x_train.to_numpy(), y_train.to_numpy())
 
+    popu_temp = {'weights_i': elm.weights_i, 'biases': elm.biases}
+    popu_range = {'weights_i': (0,1), 'biases': (0,1)}
     # popu = Optimiser.population_generation(10, {'biases': elm.biases}, {'biases': (0,1)}, random_state=42)
-    popu = Optimiser.population_generation(10, {'weights_i': elm.weights_i, 'biases': elm.biases}, {'weights_i': (0,1), 'biases': (0,1)}, random_state=42)
+    popu = Optimiser.population_generation(10, popu_temp, popu_range, random_state=42)
 
     abc = ABCOptimiser(elm, x_train.to_numpy(), y_train.to_numpy(), x_test.to_numpy(), y_test.to_numpy(), fitness_fn=f1_score, random_state=42)
     opti = GAOptimiser(elm, x_train.to_numpy(), y_train.to_numpy(), x_test.to_numpy(), y_test.to_numpy(), fitness_fn=accuracy_score, random_state=42)
@@ -346,10 +352,9 @@ if __name__ == '__main__':
     # opti.generation_loop(popu, 10)
     # opti.score()
     abc.set_verbose(True)
-    best_param = abc.fit(popu, {'weights_i': (0,1), 'biases': (0,1)}, max_iter=1000, trial_limit=100)
-    print(np.all(best_param == abc.best_individual), abc.best_idx)
+    best_param = abc.fit(popu, popu_range, max_iter=1000, trial_limit=100)
+    print('Best Params: ', best_param)
     # print(abc.compute_fitness(abc.best_individual,abc.best_idx))
-    abc.score()
     abc.score()
 
     # clf = ELMclf(n, random_state=42)
