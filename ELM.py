@@ -27,12 +27,12 @@ class ELMclf:
     :var weights_o: array of output weights for each output node
     :var biases: array of biases (n biases) for neuron, no bias for output nodes
     """
-    def __init__(self, n:int, random_state:int=None):
+    def __init__(self, n:int, l2_param=None, random_state:int=None):
         self.n = n  # number of hidden nodes, N_tilde
         self.weights_i = None  # input weights, W
         self.weights_o = None  # hidden layer weight, beta
         self.biases = None  # biases for input_weights, b
-        self.l2_param = None
+        self.l2_param = l2_param
         self.activation = lambda x: sigmoid(x, 1, 0)
         # Currently default using sigmoid function
         self.hidden_mat = None
@@ -40,7 +40,7 @@ class ELMclf:
         self.random_state = random_state
         self.rng = None # update on fit
 
-    def fit(self, X:np.ndarray, y:np.ndarray, l2_param:float=0, weights_i:np.ndarray=None, biases:np.ndarray=None):
+    def fit(self, X:np.ndarray, y:np.ndarray, l2_param:float=None, weights_i:np.ndarray=None, biases:np.ndarray=None):
         # ensure that rng is reset for every new fit
         weights_changed = weights_i is not None and np.any(weights_i != self.weights_i)
         biases_changed = biases is not None and np.any(biases != self.biases)
@@ -55,12 +55,12 @@ class ELMclf:
         else              : self.weights_i = self._init_input_weights(X.shape[1])
         if biases_changed: self.biases = biases
         else             : self.biases = self._init_biases()
-        self.l2_param = l2_param
+        if self.l2_param is None: self.l2_param = l2_param
 
         H = self._obtain_H(X)
         self.hidden_mat = H
 
-        beta = ELMclf._obtain_beta(y, H, l2_param)
+        beta = ELMclf._obtain_beta(y, H, self.l2_param)
         self.weights_o = beta
         return self
 
@@ -171,7 +171,7 @@ class ELMclf:
         y_train_dup = to2D(y_train)
 
         # Either (H^+)T or ((lambda.I + (H^T)H)^+)(H^T)T
-        if l2_param == 0:
+        if l2_param is None or l2_param == 0:
             # Obtain Moore-Penrose generalised inverse
             H_plus = np.linalg.pinv(H)
 
