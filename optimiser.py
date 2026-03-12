@@ -1,10 +1,44 @@
 ﻿import copy
 
 import numpy as np
-from sklearn.metrics import accuracy_score, precision_score, f1_score, confusion_matrix
+import pandas as pd
+from sklearn.metrics import accuracy_score
 import math
 import time
+
+from sklearn.model_selection import StratifiedKFold, KFold
+
+
 # import threading
+
+def cross_val_score(estimator, X, y=None, scoring=None, cv=None, shuffle=False, stratified=True, args=None):
+    if X is None: raise ValueError('X cannot be None')
+    if y is None: raise ValueError('y cannot be None for supervised algorithm')
+    if scoring is None: scoring = accuracy_score
+    if cv is None: cv = min(5,pd.Series(y).value_counts().min()) # select the minimum possible folds or default of 5
+    if pd.Series(y).value_counts().min() == 1 or cv == 1:
+        raise ValueError('Cross Validation folds, cv, cannot be 1.')
+    if stratified:
+        kfold = StratifiedKFold(n_splits=cv, shuffle=shuffle)
+    else:
+        kfold = KFold(n_splits=cv, shuffle=shuffle)
+
+    scores = []
+    # get indices of each fold, and run model on each
+    for i, (train_index, test_index) in enumerate(kfold.split(X, y)):
+        # Fold i:
+        x_train = X[train_index]
+        y_train = y[train_index]
+        x_test  = X[test_index]
+        y_test  = y[test_index]
+        if args:
+            estimator.fit(x_train, y_train, **args)
+        else:
+            estimator.fit(x_train, y_train)
+        y_pred = estimator.predict(x_test)
+        # print(confusion_matrix(y_test, y_pred))
+        scores.append(scoring(y_test, y_pred))
+    return scores
 
 def get_dims(param_dict: dict[str, np.ndarray]) -> dict[str, tuple]:
     """
@@ -68,9 +102,13 @@ class Optimiser:
         # return precision_score(self.y_test, self.model.predict(self.x_test), zero_division=0, average='binary') # FIXME
         return self.fitness_fn(self.y_test, self.models[index].predict(self.x_test))
 
+    def cross_eval(self, args, index=0, cv=5):
+        return np.mean(cross_val_score(self.models[index], np.concat([self.x_train, self.x_test]), np.concat([self.y_train, self.y_test]), scoring=self.fitness_fn, cv=5, args=args))
+
     def score(self):
         if self.best_individual is None or self.best_idx is None:
             raise Exception('Optimiser not fitted')
+
         final_score = self.compute_fitness(self.best_individual, self.best_idx)
         fn_name = getattr(self.fitness_fn, '__name__', 'Unknown scoring')
         print(f"Final Score ({fn_name}) on Validation Set: {final_score:.4f}")
@@ -167,38 +205,41 @@ temp_best = None
 class ABCOptimiser(Optimiser):
     def __init__(self, model, x_train, y_train, x_test, y_test, fitness_fn=accuracy_score, random_state=0):
         super().__init__([model],x_train,y_train,x_test,y_test,fitness_fn,random_state)
-        self.best_solution = None
-        self.best_score = 0
-        self.max_copy = None
-        self.min_copy = None
-        self.max_iter = None
-        self.POPULATION_LIMIT = None
+        self.best_solution       = None
+        self.best_score          = 0
+        self.max_copy            = None
+        self.min_copy            = None
+        self.max_iter            = None
+        self.POPULATION_LIMIT    = None
         self.POPULATION_TEMPLATE = None
-        self.PARAM_DIMS = None
-        self.TRIAL_LIMIT = None
-        self.verbose = False
+        self.PARAM_DIMS          = None
+        self.TRIAL_LIMIT         = None
+        self.verbose             = False
 
     def set_verbose(self, to_verbose: bool):
         self.verbose = to_verbose
 
-    def fit(self, population: list[dict], population_limit: dict, max_iter: int = 1000, trial_limit = 10, min_copy = 0, max_copy = 1):
+    def fit(self, population: list[dict], population_limit: dict, max_iter: int = 1000, trial_limit = 10, min_copy = 0, max_copy = 1, cv=1):
         if len(population) < 1:
             pass
 
         models = [copy.deepcopy(self.models[0]) for _ in range(len(population))] # len(population) = SN
         self.models = models
-        self.max_copy = max_copy
-        self.min_copy = min_copy
-        self.max_iter = max_iter
-        self.POPULATION_LIMIT = population_limit # aka param_ranges
+        self.max_copy            = max_copy
+        self.min_copy            = min_copy
+        self.max_iter            = max_iter
+        self.POPULATION_LIMIT    = population_limit # aka param_ranges
         self.POPULATION_TEMPLATE = population[0]
-        self.PARAM_DIMS = get_dims(population[0])
-        self.TRIAL_LIMIT = trial_limit
+        self.PARAM_DIMS          = get_dims(population[0])
+        self.TRIAL_LIMIT         = trial_limit
 
         rng = np.random.default_rng(self.random_state)
 
         solutions = np.concatenate(tuple(map(lambda x: x.reshape(1,-1), map(as_solution, population)))) # of shape (SN, D)
-        scores = [self.compute_fitness(population,i) for i,population in enumerate(population)]
+        if cv == 1:
+            scores = [self.compute_fitness(population,i) for i,population in enumerate(population)]
+        else:
+            scores = [self.cross_eval(population,i) for i,population in enumerate(population)]
         # scores = list(map(self.compute_fitness, population))
         SN, D = solutions.shape
         indexes = np.arange(SN)
@@ -208,7 +249,7 @@ class ABCOptimiser(Optimiser):
         for current_iter in range(max_iter+1):
             # only use current_iter of 1 to max_iter (inclusive)
             if current_iter == 0: continue
-            # if self.best_score >= 1: break
+            if self.best_score >= 1: break
 
             # Timing purpose
             start_time = time.time()
@@ -223,7 +264,11 @@ class ABCOptimiser(Optimiser):
                     trials[i] += 1
                     # print(f'\t{i} Employed: Literally the same')
                     continue
-                v_score = self.compute_fitness(v,i)
+
+                if cv == 1:
+                    v_score = self.compute_fitness(v,i)
+                else:
+                    v_score = self.cross_eval(v, i, cv)
                 # replace Si if Vi is better
                 if v_score > scores[i]:
                     solutions[i] = v_solution
@@ -249,7 +294,10 @@ class ABCOptimiser(Optimiser):
                     trials[i] += 1
                     # print(f'\t{i} Onlooker: Literally the same')
                     continue
-                v_score = self.compute_fitness(v,i)
+                if cv == 1:
+                    v_score = self.compute_fitness(v,i)
+                else:
+                    v_score = self.cross_eval(v, i, cv)
                 # Replace Si if Vi is better
                 if v_score > scores[solution_idx]:
                     solutions[solution_idx] = v_solution
@@ -286,6 +334,8 @@ class ABCOptimiser(Optimiser):
             if self.verbose: print(f'Iter {current_iter}/{max_iter}: {end_time - start_time:.4f} seconds   \t Average time: {total_time / current_iter:.4f} seconds')
 
         if self.verbose: print(f'Best score recorded: {self.best_score}, at idx: {self.best_idx}, total time: {total_time:.4f} seconds')
+        # self.best_individual
+        # self.best_idx
         # if self.verbose: print(f'Best score: {self.compute_fitness(self.best_individual,self.best_idx)}, idx: {self.best_idx}, ')
         return self.best_individual
     def neighbourhood_gen(self, solution: np.ndarray, solution_k: np.ndarray, curr_iter: int):
@@ -316,50 +366,3 @@ class ABCOptimiser(Optimiser):
         Variable Copy, inspired by spatial distribution in IWO
         """
         return (max_copy - min_copy) * (curr_iter / max_iter) + min_copy
-
-
-
-if __name__ == '__main__':
-    from ELM import ELMclf
-    import pandas as pd
-    from sklearn.model_selection import train_test_split
-
-    df = pd.read_csv('data_preprocessed.csv', index_col=0)
-    booleans = df.drop('Age', axis=1)
-    df[booleans.columns] = booleans.astype('int64')
-
-    X = df.drop('Recurred_Yes', axis=1)
-    Y = df['Recurred_Yes']
-    x_train, x_test, y_train, y_test = train_test_split(X, Y, test_size=0.2, random_state=42, stratify=Y)
-
-    n = 60
-    elm = ELMclf(n, random_state=42)
-    elm.fit(x_train.to_numpy(), y_train.to_numpy())
-
-    popu_temp = {'weights_i': elm.weights_i, 'biases': elm.biases}
-    popu_range = {'weights_i': (0,1), 'biases': (0,1)}
-    # popu = Optimiser.population_generation(10, {'biases': elm.biases}, {'biases': (0,1)}, random_state=42)
-    popu = Optimiser.population_generation(10, popu_temp, popu_range, random_state=42)
-
-    abc = ABCOptimiser(elm, x_train.to_numpy(), y_train.to_numpy(), x_test.to_numpy(), y_test.to_numpy(), fitness_fn=f1_score, random_state=42)
-    opti = GAOptimiser(elm, x_train.to_numpy(), y_train.to_numpy(), x_test.to_numpy(), y_test.to_numpy(), fitness_fn=accuracy_score, random_state=42)
-    ori_preci = precision_score(y_test, elm.predict(x_test.to_numpy()))
-    print(f'original precision: {ori_preci:.4f}')
-    print(f'original f1: {f1_score(y_test, elm.predict(x_test.to_numpy())):.4f}')
-    print(confusion_matrix(y_test, elm.predict(x_test.to_numpy())))
-
-    # print(np.concat((as_solution(popu[0]).reshape(1,-1), as_solution(popu[1]).reshape(1,-1))).shape)
-    # opti.generation_loop(popu, 10)
-    # opti.score()
-    abc.set_verbose(True)
-    best_param = abc.fit(popu, popu_range, max_iter=1000, trial_limit=100)
-    print('Best Params: ', best_param)
-    # print(abc.compute_fitness(abc.best_individual,abc.best_idx))
-    abc.score()
-
-    # clf = ELMclf(n, random_state=42)
-    # clf.fit(x_train.to_numpy(), y_train.to_numpy(), **best_param)
-    # test_pred = clf.predict(x_test.to_numpy())
-    # print('Precision score: ', precision_score(y_test, test_pred))
-    # print(confusion_matrix(y_test, clf.predict(x_test.to_numpy())))
-    # opti.score(lambda y,y_pred: precision_score(y, y_pred, average='binary', zero_division=0))
