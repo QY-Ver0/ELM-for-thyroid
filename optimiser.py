@@ -1,4 +1,5 @@
 ﻿import copy
+from enum import Enum
 
 import numpy as np
 import pandas as pd
@@ -6,39 +7,49 @@ from sklearn.metrics import accuracy_score
 import math
 import time
 
-from sklearn.model_selection import StratifiedKFold, KFold
+from sklearn.model_selection import StratifiedKFold, KFold, train_test_split
+from sklearn.preprocessing import MinMaxScaler
+
+from preprocess import preprocess, get_XY
+from utils import cross_val_score, get_metrics_df
 
 
-# import threading
-
-def cross_val_score(estimator, X, y=None, scoring=None, cv=None, shuffle=False, stratified=True, args=None):
-    if X is None: raise ValueError('X cannot be None')
-    if y is None: raise ValueError('y cannot be None for supervised algorithm')
-    if scoring is None: scoring = accuracy_score
-    if cv is None: cv = min(5,pd.Series(y).value_counts().min()) # select the minimum possible folds or default of 5
-    if pd.Series(y).value_counts().min() == 1 or cv == 1:
-        raise ValueError('Cross Validation folds, cv, cannot be 1.')
-    if stratified:
-        kfold = StratifiedKFold(n_splits=cv, shuffle=shuffle)
-    else:
-        kfold = KFold(n_splits=cv, shuffle=shuffle)
-
-    scores = []
-    # get indices of each fold, and run model on each
-    for i, (train_index, test_index) in enumerate(kfold.split(X, y)):
-        # Fold i:
-        x_train = X[train_index]
-        y_train = y[train_index]
-        x_test  = X[test_index]
-        y_test  = y[test_index]
-        if args:
-            estimator.fit(x_train, y_train, **args)
-        else:
-            estimator.fit(x_train, y_train)
-        y_pred = estimator.predict(x_test)
-        # print(confusion_matrix(y_test, y_pred))
-        scores.append(scoring(y_test, y_pred))
-    return scores
+# def cross_val_score(estimator, X, y=None, scoring=None, cv=None, shuffle=False, stratified=True, args=None, ret_train=False):
+#     if X is None: raise ValueError('X cannot be None')
+#     if y is None: raise ValueError('y cannot be None for supervised algorithm')
+#     if scoring is None: scoring = accuracy_score
+#     if cv is None: cv = min(5,pd.Series(y).value_counts().min()) # select the minimum possible folds or default of 5
+#     if pd.Series(y).value_counts().min() == 1 or cv == 1:
+#         raise ValueError('Cross Validation folds, cv, cannot be 1.')
+#     if stratified:
+#         kfold = StratifiedKFold(n_splits=cv, shuffle=shuffle)
+#     else:
+#         kfold = KFold(n_splits=cv, shuffle=shuffle)
+#
+#     train_scores = []
+#     scores = []
+#     # get indices of each fold, and run model on each
+#     for i, (train_index, test_index) in enumerate(kfold.split(X, y)):
+#         # Fold i:
+#         x_train = X[train_index]
+#         y_train = y[train_index]
+#         x_test  = X[test_index]
+#         y_test  = y[test_index]
+#         if args:
+#             estimator.fit(x_train, y_train, **args)
+#         else:
+#             estimator.fit(x_train, y_train)
+#         if ret_train:
+#             y_pred = estimator.predict(x_train)
+#             train_scores.append(scoring(y_train, y_pred))
+#             # print(confusion_matrix(y_train, y_pred))
+#
+#         y_pred = estimator.predict(x_test)
+#         scores.append(scoring(y_test, y_pred))
+#         # print(confusion_matrix(y_test, y_pred))
+#
+#         if ret_train: return train_scores, scores
+#     return scores
 
 def get_dims(param_dict: dict[str, np.ndarray]) -> dict[str, tuple]:
     """
@@ -79,32 +90,62 @@ def as_params(solution_arr: np.ndarray, param_dims: dict[str, tuple]) -> dict[st
     # get from solution_arr, then reshape based on the size
     return {key: solution_arr[idx[0]: idx[1]].reshape(param_dims[key]) for key, idx in param_idx.items()}
 
+class OptimiserName(Enum):
+    ABC = 1
+
 class Optimiser:
     def __init__(self, models:list, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray, y_test:np.ndarray, fitness_fn =accuracy_score, random_state:int=0):
         self.best_individual = None # The best param settings
-        self.best_idx = None
-        self.models = models
+        self.best_idx        = None
+        self.models          = models
+
         self.x_train = x_train
         self.y_train = y_train
-        self.x_test = x_test
-        self.y_test = y_test
-        self.fitness_fn = fitness_fn
-        self.random_state=random_state
+        self.x_test  = x_test
+        self.y_test  = y_test
 
-    def compute_fitness(self, args, index=0):
+        self.x_train_sc, self.y_train_sc, self.x_test_sc, self.y_test_sc = x_train, y_train, x_test, y_test
+
+        # train, test = preprocess(
+        #     np.concat([self.x_train, self.y_train[:,np.newaxis]], axis=1),
+        #     np.concat([self.x_test,  self.y_test[:,np.newaxis]], axis=1),
+        #     MinMaxScaler(), do_onehot=False, do_scale=True)
+        # self.x_train_sc, self.y_train_sc = get_XY(train, train.shape[1]-1)
+        # self.x_test_sc,  self.y_test_sc  = get_XY(test,  test.shape[1]-1)
+
+        self.fitness_fn   = fitness_fn
+        self.random_state = random_state
+
+        self.train_res = []
+        self.test_res  = [] # or validation, depends on what is obtained
+
+    def compute_fitness(self, args : dict, index : int = 0, ret_train : bool = False) -> float | tuple[float, float]:
         """
 
+        :param ret_train: return (train_score, test_score) if True
         :param args: dict of params to pass to fit function after x and y
         :param index: index of models (now uses multiple)
         :return: score
         """
-        self.models[index].fit(self.x_train,self.y_train,**args)
-        # return precision_score(self.y_test, self.model.predict(self.x_test), zero_division=0, average='binary') # FIXME
-        return self.fitness_fn(self.y_test, self.models[index].predict(self.x_test))
+        self.models[index].fit(self.x_train_sc,self.y_train_sc,**args)
+        tr_score = self.fitness_fn(self.y_train_sc, self.models[index].predict(self.x_train_sc))
+        te_score = self.fitness_fn(self.y_test_sc, self.models[index].predict(self.x_test_sc))
+        if ret_train: return tr_score, te_score
+        return te_score
+    def cross_eval(self, args : dict, index : int = 0, cv: int = 5, ret_train : bool = False) -> np.floating | tuple[np.floating, np.floating]:
+        if not ret_train:
+            return np.mean(cross_val_score(
+                self.models[index],
+                np.concat([self.x_train, self.x_test]),
+                np.concat([self.y_train, self.y_test]),
+                scoring=self.fitness_fn, cv=cv, args=args, ret_train=ret_train))
 
-    def cross_eval(self, args, index=0, cv=5):
-        return np.mean(cross_val_score(self.models[index], np.concat([self.x_train, self.x_test]), np.concat([self.y_train, self.y_test]), scoring=self.fitness_fn, cv=5, args=args))
-
+        train, test = cross_val_score(
+                self.models[index],
+                np.concat([self.x_train, self.x_test]),
+                np.concat([self.y_train, self.y_test]),
+                scoring=self.fitness_fn, cv=cv, args=args, ret_train=ret_train)
+        return np.mean(train), np.mean(test)
     def score(self):
         if self.best_individual is None or self.best_idx is None:
             raise Exception('Optimiser not fitted')
@@ -157,56 +198,12 @@ class Optimiser:
             population.append(individual)
         return population
 
-
-class GAOptimiser(Optimiser):
-    def __init__(self, model, x_train, y_train, x_test, y_test, fitness_fn=accuracy_score, random_state=0):
-        super().__init__([model],x_train,y_train,x_test,y_test,fitness_fn,random_state)
-
-    def generation_loop(self, population, generations_cnt, mutation_rate=0.1):
-        best_fitness_history = []
-        average_fitness_history = []
-        initial_population_size = len(population)
-        prev_fitness_scores = []
-        rng = np.random.default_rng(self.random_state)
-
-        cnt = 1
-        for generation in range(generations_cnt):
-            print("Generation: ", cnt)
-            cnt += 1
-            fitness_scores = np.array([self.compute_fitness(individual) for individual in population])
-            best_fitness = np.max(fitness_scores)
-            average_fitness = np.mean(fitness_scores)
-            best_fitness_history.append(best_fitness)
-            average_fitness_history.append(average_fitness)
-
-            # Selection
-            sorted_indices = np.argsort(fitness_scores)[::-1]  # desc order
-            population = [population[i] for i in sorted_indices[:initial_population_size // 2]]  # desc, top 50% of population
-
-            # Crossover and Mutation
-            new_population = []
-            while len(new_population) < initial_population_size:
-                parents = rng.choice(population, 2, replace=False)
-                child={}
-                for param in parents[0]:
-                    child[param] = (parents[0][param] + parents[1][param]) / 2
-
-                    if rng.random() < mutation_rate:
-                        child[param] += rng.random(child[param].shape) * 0.1 # asterisk is unpacking the shape for np.random.rand function
-                new_population.append(child)
-            population = new_population
-
-            prev_fitness_scores = fitness_scores
-        self.best_individual = population[np.argmax(prev_fitness_scores)]
-        self.best_idx = 0 # only one model
-        return self.best_individual
-
-temp_best = None
 class ABCOptimiser(Optimiser):
     def __init__(self, model, x_train, y_train, x_test, y_test, fitness_fn=accuracy_score, random_state=0):
         super().__init__([model],x_train,y_train,x_test,y_test,fitness_fn,random_state)
         self.best_solution       = None
         self.best_score          = 0
+        self.train_score         = 0
         self.max_copy            = None
         self.min_copy            = None
         self.max_iter            = None
@@ -223,6 +220,9 @@ class ABCOptimiser(Optimiser):
         if len(population) < 1:
             pass
 
+        self.best_individual = None # The best param settings
+        self.best_idx        = None
+
         models = [copy.deepcopy(self.models[0]) for _ in range(len(population))] # len(population) = SN
         self.models = models
         self.max_copy            = max_copy
@@ -237,9 +237,15 @@ class ABCOptimiser(Optimiser):
 
         solutions = np.concatenate(tuple(map(lambda x: x.reshape(1,-1), map(as_solution, population)))) # of shape (SN, D)
         if cv == 1:
-            scores = [self.compute_fitness(population,i) for i,population in enumerate(population)]
+            tr_te_scores = [self.compute_fitness(population, i, True) for i, population in enumerate(population)]
+            train_scores = [tr_te_scores[i][0] for i in range(len(tr_te_scores))]
+            scores = [tr_te_scores[i][1] for i in range(len(tr_te_scores))]
+            # scores = [self.compute_fitness(population,i) for i,population in enumerate(population)]
         else:
-            scores = [self.cross_eval(population,i) for i,population in enumerate(population)]
+            tr_te_scores = [self.cross_eval(population, i, cv, True) for i, population in enumerate(population)]
+            train_scores = [tr_te_scores[i][0] for i in range(len(tr_te_scores))]
+            scores = [tr_te_scores[i][1] for i in range(len(tr_te_scores))]
+            # scores = [self.cross_eval(population,i, cv) for i,population in enumerate(population)]
         # scores = list(map(self.compute_fitness, population))
         SN, D = solutions.shape
         indexes = np.arange(SN)
@@ -257,7 +263,7 @@ class ABCOptimiser(Optimiser):
             # Employed bee process, single loop to check whether generated solution are better
             for i in indexes:
                 second_solution = rng.choice(solutions[indexes != i])
-                v: dict = self.neighbourhood_gen(solutions[i], second_solution, current_iter)
+                v: dict = self.neighbourhood_gen(solutions[i], second_solution, current_iter, rng)
                 # Skip if Si is same as Vi
                 v_solution = as_solution(v)
                 if np.all(v_solution == solutions[i]):
@@ -266,45 +272,45 @@ class ABCOptimiser(Optimiser):
                     continue
 
                 if cv == 1:
-                    v_score = self.compute_fitness(v,i)
+                    v_tr_score, v_score = self.compute_fitness(v,i,True)
                 else:
-                    v_score = self.cross_eval(v, i, cv)
+                    v_tr_score, v_score = self.cross_eval(v, i, cv, True)
                 # replace Si if Vi is better
                 if v_score > scores[i]:
                     solutions[i] = v_solution
                     scores[i] = v_score
+                    train_scores[i] = v_tr_score
                     trials[i] = 0
                 else:
                     trials[i] += 1
-            # Timing purpose
-            end_employed_time = time.time()
-            # if self.verbose: print(f"\tEmployed: {end_employed_time - start_time:.4f} seconds")
 
             fitness_sum = np.sum(scores)
             selection_probability = np.divide(scores, fitness_sum)
             # Onlooker bee process
             second_solutions = [rng.choice(solutions[indexes != i]) for i in indexes]
-            for i in indexes:
+            for _ in indexes:
                 solution_idx = rng.choice(indexes, p=selection_probability)
                 # solution = solutions[solution_idx]
-                # second_solution = rng.choice(solutions[indexes != solution_idx]) # select solutions excluding itself
-                v: dict = self.neighbourhood_gen(solutions[i], second_solutions[i], current_iter)
+                second_solution = rng.choice(solutions[indexes != solution_idx]) # select solutions excluding itself
+                v: dict = self.neighbourhood_gen(solutions[solution_idx], second_solution, current_iter, rng)
                 v_solution = as_solution(v)
-                if np.all(v_solution == solutions[i]):
-                    trials[i] += 1
+                if np.all(v_solution == solutions[solution_idx]):
+                    trials[solution_idx] += 1
                     # print(f'\t{i} Onlooker: Literally the same')
                     continue
+
                 if cv == 1:
-                    v_score = self.compute_fitness(v,i)
+                    v_tr_score, v_score = self.compute_fitness(v,solution_idx,True)
                 else:
-                    v_score = self.cross_eval(v, i, cv)
+                    v_tr_score, v_score = self.cross_eval(v, solution_idx, cv, True)
                 # Replace Si if Vi is better
                 if v_score > scores[solution_idx]:
                     solutions[solution_idx] = v_solution
                     scores[solution_idx] = v_score
-                    trials[i] = 0
+                    train_scores[solution_idx] = v_tr_score
+                    trials[solution_idx] = 0
                 else:
-                    trials[i] += 1
+                    trials[solution_idx] += 1
 
             # Scout bee process, find new source if score is not improving
             for i in indexes:
@@ -324,26 +330,39 @@ class ABCOptimiser(Optimiser):
             if scores[current_best_idx] > self.best_score:
                 self.best_individual = copy.deepcopy(as_params(solutions[current_best_idx], self.PARAM_DIMS))
                 self.best_idx = int(current_best_idx)
-                if self.verbose: print(f"\tUpdated score: {scores[current_best_idx]}, idx: {current_best_idx}")
-                if self.verbose: print(f'\tBest score: {self.compute_fitness(self.best_individual,self.best_idx)}, idx: {self.best_idx}')
-                # self.best_solution = solutions[current_best_idx]
-                self.best_score = copy.deepcopy(scores[current_best_idx])
+                # if self.verbose: print(f"\tUpdated score: {scores[current_best_idx]}, idx: {current_best_idx}")
+                # if self.verbose: print(f'\tBest test score : {self.compute_fitness(self.best_individual,self.best_idx)}, idx: {self.best_idx}')
+                # if self.verbose: print(f'\tBest cross score: {self.cross_eval(self.best_individual,self.best_idx,cv=cv,ret_train=False)}, idx: {self.best_idx}')
+
+                # t_score = self.compute_fitness(as_params(solutions[current_best_idx],self.PARAM_DIMS), int(current_best_idx)) if cv == 1 else self.cross_eval(as_params(solutions[current_best_idx], self.PARAM_DIMS), int(current_best_idx), cv, True)[0]
+                # self.best_score = copy.deepcopy(scores[current_best_idx])
+                self.best_score = scores[current_best_idx]
+                self.train_score = train_scores[current_best_idx]
+
+            # set to train and test_res
+            self.train_res.append(self.train_score)
+            self.test_res.append(self.best_score)
 
             end_time = time.time()
             total_time += end_time - start_time
-            if self.verbose: print(f'Iter {current_iter}/{max_iter}: {end_time - start_time:.4f} seconds   \t Average time: {total_time / current_iter:.4f} seconds')
+            if self.verbose: print(
+                '\r',
+                f'Iter {current_iter}/{max_iter}: {end_time - start_time:.4f} s |',
+                f'Avg time: {total_time / current_iter:.4f} s |',
+                f'Best validation: {self.compute_fitness(self.best_individual,self.best_idx):.4f} |',
+                f'Best cross_val: {self.cross_eval(self.best_individual, self.best_idx,cv=cv,ret_train=False):.4f}, idx: {self.best_idx}',
+                end='')
 
-        if self.verbose: print(f'Best score recorded: {self.best_score}, at idx: {self.best_idx}, total time: {total_time:.4f} seconds')
+        if self.verbose: print(f'\nBest score recorded: {self.best_score}, at idx: {self.best_idx}, total time: {total_time:.4f} seconds')
         # self.best_individual
         # self.best_idx
         # if self.verbose: print(f'Best score: {self.compute_fitness(self.best_individual,self.best_idx)}, idx: {self.best_idx}, ')
         return self.best_individual
-    def neighbourhood_gen(self, solution: np.ndarray, solution_k: np.ndarray, curr_iter: int):
+    def neighbourhood_gen(self, solution: np.ndarray, solution_k: np.ndarray, curr_iter: int, rng):
         """
-        Run with Variable Copy, inspired by spatial distribution in IWO
+        Run with Variable Copy
         :return: dict, not ndarray
         """
-        rng = np.random.default_rng(self.random_state)
         p_copy = ABCOptimiser.get_p_copy(curr_iter, self.max_iter, self.min_copy, self.max_copy)
         should_copy = np.less(rng.random(solution.shape), p_copy) # array of booleans
         phis = rng.uniform(-1, 1, solution.shape)
@@ -366,3 +385,67 @@ class ABCOptimiser(Optimiser):
         Variable Copy, inspired by spatial distribution in IWO
         """
         return (max_copy - min_copy) * (curr_iter / max_iter) + min_copy
+
+def cross_val_optimisation(
+        estimator, X, y,
+        solution_template, solution_range, solution_size, max_iter, trial_limit, cv_in_optimiser=5,
+        optimiser_name=1,
+        scoring=None, cv=None, shuffle=False, stratified=True, random_state=None):
+    if X       is None: raise ValueError('X cannot be None')
+    if y       is None: raise ValueError('y cannot be None for supervised algorithm')
+    if scoring is None: scoring = accuracy_score
+    if cv      is None: cv = min(5,pd.Series(y).value_counts().min()) # select the minimum possible folds or default of 5
+    if pd.Series(y).value_counts().min() == 1 or cv == 1:
+        raise ValueError('Cross Validation folds, cv, cannot be 1.')
+    if optimiser_name not in OptimiserName:
+        raise ValueError('Optimiser Name not recognized, please only use enums such as OptimiserName.ABC.')
+    if solution_template is None or solution_range is None:
+        raise ValueError('Solution template or solution range cannot be None.')
+    if stratified:
+        kfold = StratifiedKFold(n_splits=cv, shuffle=shuffle)
+    else:
+        kfold = KFold(n_splits=cv, shuffle=shuffle)
+
+    dflist         = []
+    scores_dflist = []
+    f_rng          = np.random.default_rng(random_state)
+    solutions      = Optimiser.population_generation(
+        solution_size, solution_template, solution_range,
+        random_state=int(f_rng.uniform(0, 4294967295)))
+
+    for i, (train_index, test_index) in enumerate(kfold.split(X, y)):
+        print(f'Fold {i+1}:')
+        x_train = X[train_index].copy()
+        y_train = y[train_index].copy()
+        x_test = X[test_index].copy()
+        y_test = y[test_index].copy()
+
+        # the second split for optimiser, haven't included param for this
+        x_train_sub, x_validate, y_train_sub, y_validate = train_test_split(
+            x_train, y_train,
+            test_size=0.25, random_state=random_state, stratify=y_train)
+
+        match optimiser_name:
+            case OptimiserName.ABC: optimiser = ABCOptimiser(estimator, x_train_sub, y_train_sub, x_validate, y_validate, fitness_fn=scoring, random_state=random_state)
+            case _: raise Exception(f'No matching optimiser available. (Optimiser name: {optimiser_name})')
+
+        if optimiser_name == OptimiserName.ABC: optimiser.set_verbose(True)
+        best_param = optimiser.fit(solutions, solution_range, max_iter=max_iter, trial_limit=trial_limit, cv=cv_in_optimiser)
+        train_res_i = optimiser.train_res
+        val_res_i   = optimiser.test_res
+
+        # append DataFrame list
+        tt_df = pd.DataFrame([train_res_i, val_res_i], index=['Train', 'Validation'])
+        tt_df = tt_df.transpose()
+        iters = range(1, tt_df.shape[0] + 1)
+        tt_df.insert(0, 'Iters', iters)
+        tt_df.insert(0, 'Fold', np.repeat(i+1, tt_df.shape[0]))
+        dflist.append(tt_df)
+
+        scores_i_df = get_metrics_df(estimator.fit(x_train, y_train, **best_param),
+                                     x_train, x_test, y_train, y_test)
+        scores_i_df.insert(0, 'Fold', np.repeat(i+1, scores_i_df.shape[0]))
+        scores_dflist.append(scores_i_df)
+        # scores_metrics.append(get_metrics(y_test, estimator.predict(x_test)))
+
+    return dflist, scores_dflist

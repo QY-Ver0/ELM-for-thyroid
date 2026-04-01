@@ -36,25 +36,36 @@ class ELMclf:
         self.activation = lambda x: sigmoid(x, 1, 0)
         # Currently default using sigmoid function
         self.hidden_mat = None
+        self.x = None
+        self.y = None
 
         self.random_state = random_state
         self.rng = None # update on fit
 
     def fit(self, X:np.ndarray, y:np.ndarray, l2_param:float=None, weights_i:np.ndarray=None, biases:np.ndarray=None):
         # ensure that rng is reset for every new fit
-        weights_changed = weights_i is not None and np.any(weights_i != self.weights_i)
+        weights_changed = (weights_i is not None and np.any(weights_i != self.weights_i))
         biases_changed = biases is not None and np.any(biases != self.biases)
 
         # IF nothing important changed (if no external modification), why refit
         # without this, something weird happens in the training, and I do not know why
-        if self.weights_i is not None and self.biases is not None and not weights_changed and not biases_changed:
+        if ((self.x is not None and self.x.shape == X.shape and np.all(self.x == X))
+                and (self.y is not None and self.y.shape == y.shape and np.all(self.y == y))
+                and self.weights_i is not None
+                and self.biases is not None
+                and not (weights_changed or weights_i is None)
+                and not (biases_changed or biases is None)):
             return self
+
+        # this part is to ensure rng is reset in each state, running through same call every run
         self.rng = np.random.default_rng(self.random_state)
+        new_input_weights = self._init_input_weights(X.shape[1])
+        new_biases = self._init_biases()
 
         if weights_changed: self.weights_i = weights_i
-        else              : self.weights_i = self._init_input_weights(X.shape[1])
+        else              : self.weights_i = new_input_weights
         if biases_changed: self.biases = biases
-        else             : self.biases = self._init_biases()
+        else             : self.biases = new_biases
         if self.l2_param is None: self.l2_param = l2_param
 
         H = self._obtain_H(X)
