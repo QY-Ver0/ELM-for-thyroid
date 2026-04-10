@@ -6,7 +6,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import MinMaxScaler, OneHotEncoder, OrdinalEncoder
 import pandas as pd
 
-def get_data(fname='Thyroid_Diff.csv',index_col=None):
+def get_data(fname='data/thyroid_diff.csv',index_col=None):
     if os.path.isfile(fname):
         df = pd.read_csv(fname,index_col=index_col)
     else:
