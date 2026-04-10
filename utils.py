@@ -1,7 +1,7 @@
 ﻿# Some functions used
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score, f1_score, fbeta_score, recall_score, precision_score
+from sklearn.metrics import accuracy_score, f1_score, fbeta_score, recall_score, precision_score, matthews_corrcoef
 from sklearn.model_selection import StratifiedKFold, KFold
 from sklearn.preprocessing import MinMaxScaler
 
@@ -108,16 +108,20 @@ def cross_val_score(estimator, X, y=None, scoring=None, cv=None, shuffle=False, 
 #     return scores
 
 
+
 def get_metrics(y, y_pred):
     # to get pandas dataframe for showing a table of comparison
     # between train result and test result
+    # it also considers binary target, since specificity is here
     return {
         'accuracy': accuracy_score(y, y_pred),
         'precision': precision_score(y, y_pred, average='binary', zero_division=0),
         'recall': recall_score(y, y_pred, average='binary', zero_division=0),
-        # 'specificity': specificity_score(y, y_pred, zero_division=0),
         'f1': f1_score(y, y_pred, average='binary', zero_division=0),
         'f2': fbeta_score(y, y_pred, beta=2, average='binary', zero_division=0),
+        'specificity': recall_score(y, y_pred, average='binary', zero_division=0, pos_label=y.min()),
+        'npv': precision_score(y, y_pred, average='binary', zero_division=0, pos_label=y.min()),
+        'mcc': matthews_corrcoef(y, y_pred),
     }
 
 def get_metrics_df(model_fitted: ELMclf, x_train, x_test, y_train, y_test):
