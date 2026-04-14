@@ -163,6 +163,20 @@ class ELMclf:
         f = lambda i, j: np.dot(self.weights_i[int(j)], x_train[int(i)])
         H = np.fromfunction(np.vectorize(f), (n_samples, self.n), dtype=self.weights_i.dtype)
 
+    def return_args(self):
+        return {
+            'weights_i': self.weights_i,
+            'biases':    self.biases,
+            'l2_param':  self.l2_param,
+        }
+
+    @staticmethod
+    def return_args_range():
+        return {
+            'weights_i': (-1,1),
+            'biases':    (-1,1),
+            'l2_param':  (0.,1.)
+        }
     @staticmethod
     def _obtain_beta(y_train:np.ndarray, H:np.ndarray, l2_param:float=0):
         """
