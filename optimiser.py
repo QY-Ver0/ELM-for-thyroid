@@ -10,7 +10,6 @@ import time
 from sklearn.model_selection import StratifiedKFold, KFold, train_test_split
 from sklearn.preprocessing import MinMaxScaler
 
-from preprocess import preprocess, get_XY
 from utils import cross_val_score, get_metrics_df
 
 
@@ -94,31 +93,28 @@ class OptimiserName(Enum):
     ABC = 1
 
 class Optimiser:
-    def __init__(self, models:list, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray, y_test:np.ndarray, fitness_fn =accuracy_score, random_state:int=0):
+    # def __init__(self, models:list, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray, y_test:np.ndarray, fitness_fn =accuracy_score, random_state:int=0):
+    def __init__(self, models:list, fitness_fn =accuracy_score, random_state:int=0):
         self.best_individual = None # The best param settings
         self.best_idx        = None
         self.models          = models
 
-        self.x_train = x_train
-        self.y_train = y_train
-        self.x_test  = x_test
-        self.y_test  = y_test
-
-        self.x_train_sc, self.y_train_sc, self.x_test_sc, self.y_test_sc = x_train, y_train, x_test, y_test
-
-        # train, test = preprocess(
-        #     np.concat([self.x_train, self.y_train[:,np.newaxis]], axis=1),
-        #     np.concat([self.x_test,  self.y_test[:,np.newaxis]], axis=1),
-        #     MinMaxScaler(), do_onehot=False, do_scale=True)
-        # self.x_train_sc, self.y_train_sc = get_XY(train, train.shape[1]-1)
-        # self.x_test_sc,  self.y_test_sc  = get_XY(test,  test.shape[1]-1)
+        # self.x_train = x_train # can be overwritten
+        # self.y_train = y_train # can be overwritten
+        # self.x_test  = x_test  # can be overwritten
+        # self.y_test  = y_test  # can be overwritten
+        self.x_train = None # can be overwritten
+        self.y_train = None # can be overwritten
+        self.x_test  = None # can be overwritten
+        self.y_test  = None # can be overwritten
 
         self.fitness_fn   = fitness_fn
         self.random_state = random_state
 
         self.train_res = []
         self.test_res  = [] # or validation, depends on what is obtained
-
+    def predict(self, x):
+        return self.models[self.best_idx].predict(x)
     def compute_fitness(self, args : dict, index : int = 0, ret_train : bool = False) -> float | tuple[float, float]:
         """
 
@@ -127,9 +123,9 @@ class Optimiser:
         :param index: index of models (now uses multiple)
         :return: score
         """
-        self.models[index].fit(self.x_train_sc,self.y_train_sc,**args)
-        tr_score = self.fitness_fn(self.y_train_sc, self.models[index].predict(self.x_train_sc))
-        te_score = self.fitness_fn(self.y_test_sc, self.models[index].predict(self.x_test_sc))
+        self.models[index].fit(self.x_train,self.y_train,**args)
+        tr_score = self.fitness_fn(self.y_train, self.models[index].predict(self.x_train))
+        te_score = self.fitness_fn(self.y_test, self.models[index].predict(self.x_test))
         if ret_train: return tr_score, te_score
         return te_score
     def cross_eval(self, args : dict, index : int = 0, cv: int = 5, ret_train : bool = False) -> np.floating | tuple[np.floating, np.floating]:
@@ -199,8 +195,12 @@ class Optimiser:
         return population
 
 class ABCOptimiser(Optimiser):
-    def __init__(self, model, x_train, y_train, x_test, y_test, fitness_fn=accuracy_score, random_state=0):
-        super().__init__([model],x_train,y_train,x_test,y_test,fitness_fn,random_state)
+    # def __init__(self, model, x_train, y_train, x_test, y_test, fitness_fn=accuracy_score, random_state=0):
+    def __init__(self, model, fitness_fn=accuracy_score, random_state=0):
+        # super().__init__([model],x_train,y_train,x_test,y_test,fitness_fn,random_state)
+        super().__init__([model],fitness_fn,random_state)
+        self.lim_reached_cnts    = None
+
         self.best_solution       = None
         self.best_score          = 0
         self.train_score         = 0
@@ -216,15 +216,25 @@ class ABCOptimiser(Optimiser):
     def set_verbose(self, to_verbose: bool):
         self.verbose = to_verbose
 
-    def fit(self, population: list[dict], population_limit: dict, max_iter: int = 1000, trial_limit = 10, min_copy = 0, max_copy = 1, cv=1):
-        if len(population) < 1:
-            pass
-
+    def fit(self, x_train, y_train, x_test, y_test, population: list[dict], population_limit: dict, max_iter: int = 1000, trial_limit = 10, min_copy = 0, max_copy = 1, cv=1):
         self.best_individual = None # The best param settings
         self.best_idx        = None
 
+        self.lim_reached_cnts = []
+        self.train_res        = []
+        self.test_res         = [] # or validation, depends on what is obtained
+        self.x_train = x_train # can be overwritten
+        self.y_train = y_train # can be overwritten
+        self.x_test  = x_test  # can be overwritten
+        self.y_test  = y_test  # can be overwritten
+        if len(population) < 1:
+            pass
+
         models = [copy.deepcopy(self.models[0]) for _ in range(len(population))] # len(population) = SN
         self.models = models
+        self.best_solution       = None
+        self.best_score          = 0
+        self.train_score         = 0
         self.max_copy            = max_copy
         self.min_copy            = min_copy
         self.max_iter            = max_iter
@@ -234,6 +244,9 @@ class ABCOptimiser(Optimiser):
         self.TRIAL_LIMIT         = trial_limit
 
         rng = np.random.default_rng(self.random_state)
+
+
+        print(self.train_res, self.test_res)
 
         solutions = np.concatenate(tuple(map(lambda x: x.reshape(1,-1), map(as_solution, population)))) # of shape (SN, D)
         if cv == 1:
@@ -251,7 +264,8 @@ class ABCOptimiser(Optimiser):
         indexes = np.arange(SN)
 
         total_time = 0.
-        trials = [0] * SN
+        trials = np.repeat(0, SN)
+        # trials = [0] * SN
         for current_iter in range(max_iter+1):
             # only use current_iter of 1 to max_iter (inclusive)
             if current_iter == 0: continue
@@ -260,10 +274,16 @@ class ABCOptimiser(Optimiser):
             # Timing purpose
             start_time = time.time()
 
+            # current p copy
+            curr_p_copy = ABCOptimiser.get_p_copy(current_iter, max_iter, self.min_copy, self.max_copy)
+
             # Employed bee process, single loop to check whether generated solution are better
+            second_solutions_idxes = np.vectorize(lambda i: rng.choice(indexes[indexes != i]))(indexes)
+            # second_solutions = np.vectorize(lambda i: solutions[rng.choice(indexes[indexes != i])], otypes=[np.ndarray])(indexes)
+            second_solutions = solutions[second_solutions_idxes]
+            vs = [self.neighbourhood_gen(solutions[i], second_solutions[i], curr_p_copy, rng) for i in indexes]
             for i in indexes:
-                second_solution = rng.choice(solutions[indexes != i])
-                v: dict = self.neighbourhood_gen(solutions[i], second_solution, current_iter, rng)
+                v = vs[i]
                 # Skip if Si is same as Vi
                 v_solution = as_solution(v)
                 if np.all(v_solution == solutions[i]):
@@ -287,12 +307,13 @@ class ABCOptimiser(Optimiser):
             fitness_sum = np.sum(scores)
             selection_probability = np.divide(scores, fitness_sum)
             # Onlooker bee process
-            second_solutions = [rng.choice(solutions[indexes != i]) for i in indexes]
-            for _ in indexes:
-                solution_idx = rng.choice(indexes, p=selection_probability)
-                # solution = solutions[solution_idx]
-                second_solution = rng.choice(solutions[indexes != solution_idx]) # select solutions excluding itself
-                v: dict = self.neighbourhood_gen(solutions[solution_idx], second_solution, current_iter, rng)
+            solution_idxes = rng.choice(indexes, size=SN, p=selection_probability)
+            second_solution_idxes = np.vectorize(lambda i: rng.choice(indexes[indexes != i]))(solution_idxes)
+            second_solutions = solutions[second_solution_idxes]
+            vs = [self.neighbourhood_gen(solutions[i], second_solutions[i], curr_p_copy, rng) for i in solution_idxes]
+            for i in indexes:
+                solution_idx = solution_idxes[i]
+                v = vs[i]
                 v_solution = as_solution(v)
                 if np.all(v_solution == solutions[solution_idx]):
                     trials[solution_idx] += 1
@@ -313,14 +334,22 @@ class ABCOptimiser(Optimiser):
                     trials[solution_idx] += 1
 
             # Scout bee process, find new source if score is not improving
+            are_lim_reached = trials > (self.TRIAL_LIMIT-1) # a mask
+            lim_reached_cnt = np.count_nonzero(are_lim_reached)
+            # if lim_reached_cnt > 0:
+            #     solutions[are_lim_reached] = Optimiser.population_generation(
+            #         lim_reached_cnt, self.POPULATION_TEMPLATE, self.POPULATION_LIMIT, int(rng.uniform(1, 4294967295))
+            #     )
+            #     print(solutions[are_lim_reached], '\n')
+            #     trials[are_lim_reached] = 0
             for i in indexes:
                 if trials[i] > self.TRIAL_LIMIT-1:
                     # if self.verbose: print(f'\t{i}: Update its solution')
-                    solutions[i] = copy.deepcopy(as_solution(
+                    solutions[i] = as_solution(
                         Optimiser.population_generation(
                             1, self.POPULATION_TEMPLATE, self.POPULATION_LIMIT, int(rng.uniform(1, 4294967295))
                         )[0]
-                    ))
+                    )
                     trials[i] = 0
 
             # Save current best solution
@@ -328,7 +357,7 @@ class ABCOptimiser(Optimiser):
             # if self.verbose: print(f"\tCurrent highest score: {scores[current_best_idx]}")
 
             if scores[current_best_idx] > self.best_score:
-                self.best_individual = copy.deepcopy(as_params(solutions[current_best_idx], self.PARAM_DIMS))
+                self.best_individual = as_params(solutions[current_best_idx], self.PARAM_DIMS)
                 self.best_idx = int(current_best_idx)
                 # if self.verbose: print(f"\tUpdated score: {scores[current_best_idx]}, idx: {current_best_idx}")
                 # if self.verbose: print(f'\tBest test score : {self.compute_fitness(self.best_individual,self.best_idx)}, idx: {self.best_idx}')
@@ -339,9 +368,15 @@ class ABCOptimiser(Optimiser):
                 self.best_score = scores[current_best_idx]
                 self.train_score = train_scores[current_best_idx]
 
+            elif self.best_idx is None:
+                # sometimes it just happens
+                self.best_individual = as_params(solutions[current_best_idx], self.PARAM_DIMS)
+                self.best_idx = int(current_best_idx)
+
             # set to train and test_res
             self.train_res.append(self.train_score)
             self.test_res.append(self.best_score)
+            self.lim_reached_cnts.append(lim_reached_cnt)
 
             end_time = time.time()
             total_time += end_time - start_time
@@ -358,12 +393,12 @@ class ABCOptimiser(Optimiser):
         # self.best_idx
         # if self.verbose: print(f'Best score: {self.compute_fitness(self.best_individual,self.best_idx)}, idx: {self.best_idx}, ')
         return self.best_individual
-    def neighbourhood_gen(self, solution: np.ndarray, solution_k: np.ndarray, curr_iter: int, rng):
+    def neighbourhood_gen(self, solution: np.ndarray, solution_k: np.ndarray, p_copy: int, rng):
         """
         Run with Variable Copy
         :return: dict, not ndarray
         """
-        p_copy = ABCOptimiser.get_p_copy(curr_iter, self.max_iter, self.min_copy, self.max_copy)
+        # p_copy = ABCOptimiser.get_p_copy(curr_iter, self.max_iter, self.min_copy, self.max_copy)
         should_copy = np.less(rng.random(solution.shape), p_copy) # array of booleans
         phis = rng.uniform(-1, 1, solution.shape)
         res = np.where(should_copy, solution, np.add(solution, np.multiply(phis, np.subtract(solution, solution_k))))

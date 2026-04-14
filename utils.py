@@ -2,14 +2,15 @@
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, f1_score, fbeta_score, recall_score, precision_score, matthews_corrcoef
-from sklearn.model_selection import StratifiedKFold, KFold
+from sklearn.model_selection import StratifiedKFold, KFold, train_test_split
 from sklearn.preprocessing import MinMaxScaler
 
 from preprocess import preprocess, get_XY
 
 from ELM import ELMclf
 
-def cross_val_score(estimator, X, y=None, scoring=None, cv=None, shuffle=False, stratified=True, args=None, ret_train=False):
+def cross_val_score(estimator, X, y=None, scoring=None, cv=None, shuffle=False, stratified=True, random_state=None, args=None, ret_train=False, ret_graph_df=False, val_size: float=None):
+    # random state will be used in train_test_split if it is enabled
     if X is None: raise ValueError('X cannot be None')
     if y is None: raise ValueError('y cannot be None for supervised algorithm')
     if scoring is None: scoring = accuracy_score
@@ -17,12 +18,20 @@ def cross_val_score(estimator, X, y=None, scoring=None, cv=None, shuffle=False, 
     if pd.Series(y).value_counts().min() == 1 or cv == 1:
         raise ValueError('Cross Validation folds, cv, cannot be 1.')
     if stratified:
-        kfold = StratifiedKFold(n_splits=cv, shuffle=shuffle)
+        if shuffle and random_state:
+            kfold = StratifiedKFold(n_splits=cv, shuffle=shuffle, random_state=random_state)
+        else:
+            kfold = StratifiedKFold(n_splits=cv, shuffle=shuffle)
     else:
-        kfold = KFold(n_splits=cv, shuffle=shuffle)
+        if shuffle and random_state:
+            kfold = KFold(n_splits=cv, shuffle=shuffle, random_state=random_state)
+        else:
+            kfold = KFold(n_splits=cv, shuffle=shuffle)
 
     train_scores = []
     scores = []
+    dflist = []
+    scores_dflist = []
     # get indices of each fold, and run model on each
     for i, (train_index, test_index) in enumerate(kfold.split(X, y)):
         # Fold i:
@@ -30,11 +39,22 @@ def cross_val_score(estimator, X, y=None, scoring=None, cv=None, shuffle=False, 
         y_train = y[train_index].copy()
         x_test  = X[test_index].copy()
         y_test  = y[test_index].copy()
-        # if not np.any(x_train[:,0] == 1) and np.any(x_test[:,0] == 1): print(f'Fold {i}: data leakage risk')
+
+        # for abc to work here too
+        x_train_sub, x_validate, y_train_sub, y_validate = None, None, None, None
+        if val_size is not None:
+            x_train_sub, x_validate, y_train_sub, y_validate = train_test_split(x_train, y_train, test_size=val_size, random_state=random_state, stratify=y_train)
         if args:
-            estimator.fit(x_train, y_train, **args)
+            if val_size is not None:
+                print(f'Fold {i+1}:')
+                best_param = estimator.fit(x_train_sub, y_train_sub, x_validate, y_validate, **args)
+            else:
+                best_param = estimator.fit(x_train, y_train, **args)
         else:
-            estimator.fit(x_train, y_train)
+            if val_size is not None:
+                best_param = estimator.fit(x_train_sub, y_train_sub, x_validate, y_validate)
+            else:
+                best_param = estimator.fit(x_train, y_train)
         if ret_train:
             y_pred = estimator.predict(x_train)
             train_scores.append(scoring(y_train, y_pred))
@@ -44,8 +64,30 @@ def cross_val_score(estimator, X, y=None, scoring=None, cv=None, shuffle=False, 
         scores.append(scoring(y_test, y_pred))
         # print(confusion_matrix(y_test, y_pred))
 
-    if ret_train: return train_scores, scores
-    return scores
+        # for optimisers
+        if ret_graph_df:
+            train_res_i = estimator.train_res
+            val_res_i   = estimator.test_res
+            scouts_cnt  = estimator.lim_reached_cnts
+
+            # append DataFrame list
+            tt_df = pd.DataFrame([train_res_i, val_res_i, scouts_cnt], index=['Train', 'Validation', 'ScoutCall'])
+            tt_df = tt_df.transpose()
+            iters = range(1, tt_df.shape[0] + 1)
+            tt_df.insert(0, 'Iters', iters)
+            tt_df.insert(0, 'Fold', np.repeat(i + 1, tt_df.shape[0]))
+            dflist.append(tt_df)
+
+            scores_i_df = get_metrics_df(estimator.models[estimator.best_idx].fit(x_train, y_train, **best_param),
+                                         x_train, x_test, y_train, y_test)
+            scores_i_df.insert(0, 'Fold', np.repeat(i + 1, scores_i_df.shape[0]))
+            scores_dflist.append(scores_i_df)
+
+    if ret_train:
+        if ret_graph_df: return train_scores, scores, dflist, scores_dflist
+        else:            return train_scores, scores
+    if ret_graph_df: return dflist, scores_dflist
+    else:            return scores
 #
 # def cross_val_score(estimator, X, y=None, scoring=None, cv=None, shuffle=False, stratified=True, args=None, random_state=None, ret_train=False):
 #     # pass unscaled data in, to ensure data leakage
