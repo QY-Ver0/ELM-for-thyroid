@@ -1,6 +1,7 @@
 ﻿# Some functions used
 import numpy as np
 import pandas as pd
+from matplotlib import pyplot as plt
 from sklearn.metrics import accuracy_score, f1_score, fbeta_score, recall_score, precision_score, matthews_corrcoef
 from sklearn.model_selection import StratifiedKFold, KFold, train_test_split
 from sklearn.preprocessing import MinMaxScaler
@@ -8,15 +9,30 @@ from sklearn.preprocessing import MinMaxScaler
 from preprocess import preprocess, get_XY
 
 from ELM import ELMclf
+def f1(y_true, y_pred):
+    raw_y_true = np.asarray(y_true).ravel()
+    raw_y_pred = np.asarray(y_pred).ravel()
 
+    # self.raw_y_true = y_true
+    # self.raw_y_pred = y_pred
+
+    y_true = np.where(raw_y_true == np.min(raw_y_true), -1, 1)
+    y_pred = np.where(raw_y_pred == np.min(raw_y_pred), -1, 1)
+
+    TP = np.sum((y_true == 1) & (y_pred == 1))
+    TN = np.sum((y_true == -1) & (y_pred == -1))
+    FP = np.sum((y_true == -1) & (y_pred == 1))
+    FN = np.sum((y_true == 1) & (y_pred == -1))
+
+    return 2 * TP / (2 * TP + FP + FN) if (TP + FP + FN) > 0 else 0
 def cross_val_score(estimator, X, y=None, scoring=None, cv=None, shuffle=False, stratified=True, random_state=None, args=None, ret_train=False, ret_graph_df=False, val_size: float=None):
     # random state will be used in train_test_split if it is enabled
     if X is None: raise ValueError('X cannot be None')
     if y is None: raise ValueError('y cannot be None for supervised algorithm')
     if scoring is None: scoring = accuracy_score
-    if cv is None: cv = min(5,pd.Series(y).value_counts().min()) # select the minimum possible folds or default of 5
-    if pd.Series(y).value_counts().min() == 1 or cv == 1:
-        raise ValueError('Cross Validation folds, cv, cannot be 1.')
+    # if cv is None: cv = min(5,pd.Series(y).value_counts().min()) # select the minimum possible folds or default of 5
+    # if pd.Series(y).value_counts().min() == 1 or cv == 1:
+    #     raise ValueError('Cross Validation folds, cv, cannot be 1.')
     if stratified:
         if shuffle and random_state:
             kfold = StratifiedKFold(n_splits=cv, shuffle=shuffle, random_state=random_state)
@@ -27,7 +43,8 @@ def cross_val_score(estimator, X, y=None, scoring=None, cv=None, shuffle=False, 
             kfold = KFold(n_splits=cv, shuffle=shuffle, random_state=random_state)
         else:
             kfold = KFold(n_splits=cv, shuffle=shuffle)
-
+    X = X.view()
+    y = y.ravel()
     train_scores = []
     scores = []
     dflist = []
@@ -35,15 +52,16 @@ def cross_val_score(estimator, X, y=None, scoring=None, cv=None, shuffle=False, 
     # get indices of each fold, and run model on each
     for i, (train_index, test_index) in enumerate(kfold.split(X, y)):
         # Fold i:
-        x_train = X[train_index].copy()
-        y_train = y[train_index].copy()
-        x_test  = X[test_index].copy()
-        y_test  = y[test_index].copy()
+        x_train = X[train_index]
+        y_train = y[train_index]
+        x_test  = X[test_index]
+        y_test  = y[test_index]
 
         # for abc to work here too
         x_train_sub, x_validate, y_train_sub, y_validate = None, None, None, None
         if val_size is not None:
             x_train_sub, x_validate, y_train_sub, y_validate = train_test_split(x_train, y_train, test_size=val_size, random_state=random_state, stratify=y_train)
+
         if args:
             if val_size is not None:
                 print(f'Fold {i+1}:')
@@ -55,13 +73,15 @@ def cross_val_score(estimator, X, y=None, scoring=None, cv=None, shuffle=False, 
                 best_param = estimator.fit(x_train_sub, y_train_sub, x_validate, y_validate)
             else:
                 best_param = estimator.fit(x_train, y_train)
+
+        y_pred = estimator.predict(x_test)
+        scores.append(scoring(y_test, y_pred))
         if ret_train:
             y_pred = estimator.predict(x_train)
             train_scores.append(scoring(y_train, y_pred))
             # print(confusion_matrix(y_train, y_pred))
 
-        y_pred = estimator.predict(x_test)
-        scores.append(scoring(y_test, y_pred))
+
         # print(confusion_matrix(y_test, y_pred))
 
         # for optimisers
@@ -184,14 +204,84 @@ def get_metrics_df(model_fitted: ELMclf, x_train, x_test, y_train, y_test):
 
     return metrics_df
 
-def train_test_graph(train_res,test_res):
+def train_test_graph(train_res,test_res,scout_call):
     if len(train_res) != len(test_res):
         raise Exception('Both train and validate list/array must have same length')
-    tt_df = pd.DataFrame([train_res, test_res], index=['Train', 'Validation'])
+    tt_df = pd.DataFrame([train_res, test_res, scout_call], index=['Train', 'Validation', 'ScoutCall'])
     tt_df = tt_df.transpose()
     iters = range(1, tt_df.shape[0]+1)
     tt_df.insert(0, 'Iters', iters)
 
-    ax = tt_df.plot.line('Iters', 'Train', color='orange')
-    tt_df.plot.line('Iters', 'Validation', color='cyan', ax=ax)
-    return ax, tt_df
+    fig, (ax_up, ax_down) = plt.subplots(2, 1, gridspec_kw={'height_ratios': [4,1]})
+    tt_df.plot.line('Iters', 'Train', color='orange', ax=ax_up)
+    tt_df.plot.line('Iters', 'Validation', color='cyan', ax=ax_up)
+    tt_df.plot.line('Iters', 'ScoutCall', color='grey', ax=ax_down)
+
+    ax_up.set_xlabel('')
+    ax_up.tick_params(axis='x', labelbottom=False)
+    # plt.fill_between(tt_df[''])
+
+    ax_down.minorticks_on()
+    ax_down.grid(which='minor', axis='y', linestyle='--', linewidth=0.4)
+    fig.tight_layout()
+    return fig, tt_df
+
+def train_test_graph_multiseed_2(tt_df):
+    # average of variance of folds for ech model
+    group = tt_df.groupby(['Seed', 'Iters'], as_index=False)
+    avg_seed_df = group.mean()
+    std_seed_df = group.std()
+    avg_sub_std_df = avg_seed_df.drop(['Seed', 'Iters'], axis=1) - std_seed_df.drop(['Seed', 'Iters'],                                                                     axis=1)  # In each iters find lower bound per fold
+    avg_sub_std_df = pd.concat([avg_seed_df[['Seed', 'Iters']], avg_sub_std_df], axis=1)
+    avg_df = avg_sub_std_df.groupby(['Iters'], as_index=False).mean() # avg of models
+    std_df = avg_sub_std_df.groupby(['Iters'], as_index=False).std()  # std of that
+    fig, (ax_up, ax_down) = plt.subplots(2, 1, gridspec_kw={'height_ratios': [4, 1]})
+    avg_df.plot.line('Iters', 'Train', color='orange', ax=ax_up)
+    avg_df.plot.line('Iters', 'Validation', color='cyan', ax=ax_up)
+    avg_df.plot.line('Iters', 'ScoutCall', color='grey', ax=ax_down)
+
+    ax_up.set_xlabel('')
+    ax_up.tick_params(axis='x', labelbottom=False)
+    ax_up.fill_between(avg_df['Iters'],
+                       avg_df['Train'] - std_df['Train'],
+                       avg_df['Train'] + std_df['Train'],
+                       alpha=0.2, color='orange', label='Train_std')
+    ax_up.fill_between(avg_df['Iters'],
+                       avg_df['Validation'] - std_df['Validation'],
+                       avg_df['Validation'] + std_df['Validation'],
+                       alpha=0.2, color='cyan', label='Validation_std')
+
+    ax_down.minorticks_on()
+    ax_down.grid(which='minor', axis='y', linestyle='--', linewidth=0.4)
+    fig.tight_layout()
+    return fig, avg_df
+def train_test_graph_multiseed(tt_df):
+    # average of variance per fold of performance in each model (seed)
+    group = tt_df.groupby(['Fold', 'Iters'], as_index=False)
+    avg_fold_df = group.mean()
+    std_fold_df = group.std()
+    return train_test_graph_2(avg_fold_df, std_fold_df)
+def train_test_graph_2(avg_fold_df, std_fold_df):
+    avg_df = avg_fold_df.groupby(['Iters'], as_index=False).mean().drop(['Seed'], axis=1)
+    std_df = std_fold_df.groupby(['Iters'], as_index=False).mean().drop(['Seed'], axis=1)
+
+    fig, (ax_up, ax_down) = plt.subplots(2, 1, gridspec_kw={'height_ratios': [4, 1]})
+    avg_df.plot.line('Iters', 'Train', color='orange', ax=ax_up)
+    avg_df.plot.line('Iters', 'Validation', color='cyan', ax=ax_up)
+    avg_df.plot.line('Iters', 'ScoutCall', color='grey', ax=ax_down)
+
+    ax_up.set_xlabel('')
+    ax_up.tick_params(axis='x', labelbottom=False)
+    ax_up.fill_between(avg_df['Iters'],
+                       avg_df['Train'] - std_df['Train'],
+                       avg_df['Train'] + std_df['Train'],
+                       alpha=0.2, color='orange', label='Train_std')
+    ax_up.fill_between(avg_df['Iters'],
+                       avg_df['Validation'] - std_df['Validation'],
+                       avg_df['Validation'] + std_df['Validation'],
+                       alpha=0.2, color='cyan', label='Validation_std')
+
+    ax_down.minorticks_on()
+    ax_down.grid(which='minor', axis='y', linestyle='--', linewidth=0.4)
+    fig.tight_layout()
+    return fig
