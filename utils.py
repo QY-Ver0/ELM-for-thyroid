@@ -25,7 +25,26 @@ def f1(y_true, y_pred):
     FN = np.sum((y_true == 1) & (y_pred == -1))
 
     return 2 * TP / (2 * TP + FP + FN) if (TP + FP + FN) > 0 else 0
-def cross_val_score(estimator, X, y=None, scoring=None, cv=None, shuffle=False, stratified=True, random_state=None, args=None, ret_train=False, ret_graph_df=False, val_size: float=None):
+def mcc(y_true, y_pred):
+    raw_y_true = np.asarray(y_true).ravel()
+    raw_y_pred = np.asarray(y_pred).ravel()
+
+    y_true = np.where(raw_y_true == np.min(raw_y_true), -1, 1)
+    y_pred = np.where(raw_y_pred == np.min(raw_y_pred), -1, 1)
+
+    TP = np.sum((y_true == 1) & (y_pred == 1))
+    TN = np.sum((y_true == -1) & (y_pred == -1))
+    FP = np.sum((y_true == -1) & (y_pred == 1))
+    FN = np.sum((y_true == 1) & (y_pred == -1))
+
+    return (TP*TN - FP*FN) / ((TP+FP)*(TP+FN)*(TN+FP)*(TN+FN)) ** 0.5
+def cross_val_score(estimator, X, y=None,
+                    scoring=None, cv=None,
+                    shuffle=False, stratified=True,
+                    random_state=None,
+                    args=None,
+                    ret_train=False, ret_graph_df=False,
+                    val_size: float=None):
     # random state will be used in train_test_split if it is enabled
     if X is None: raise ValueError('X cannot be None')
     if y is None: raise ValueError('y cannot be None for supervised algorithm')
@@ -253,7 +272,11 @@ def train_test_graph_multiseed_2(tt_df):
 
     ax_down.minorticks_on()
     ax_down.grid(which='minor', axis='y', linestyle='--', linewidth=0.4)
+
+    print(f'Final Validation Std: {std_df.iloc[-1]['Validation']}')
+    print(f'Final Train Std: {std_df.iloc[-1]['Train']}')
     fig.tight_layout()
+    # fig.legend()
     return fig, avg_df
 def train_test_graph_multiseed(tt_df):
     # average of variance per fold of performance in each model (seed)
@@ -283,5 +306,7 @@ def train_test_graph_2(avg_fold_df, std_fold_df):
 
     ax_down.minorticks_on()
     ax_down.grid(which='minor', axis='y', linestyle='--', linewidth=0.4)
+    print(f'Final Validation Std: {std_df.iloc[-1]['Validation']}')
+    print(f'Final Train Std: {std_df.iloc[-1]['Train']}')
     fig.tight_layout()
     return fig

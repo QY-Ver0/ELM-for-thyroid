@@ -44,18 +44,21 @@ class ELMclf:
 
     def fit(self, X:np.ndarray, y:np.ndarray, l2_param:float=None, weights_i:np.ndarray=None, biases:np.ndarray=None):
         # ensure that rng is reset for every new fit
+        y = y.ravel()
+        # if weights_i is not None: weights_i = weights_i.view()
+        if biases is not None:    biases = biases.ravel()
         weights_changed = (weights_i is not None and np.any(weights_i != self.weights_i))
         biases_changed = biases is not None and np.any(biases != self.biases)
 
         # IF nothing important changed (if no external modification), why refit
         # without this, something weird happens in the training, and I do not know why
-        if ((self.x is not None and self.x.shape == X.shape and np.all(self.x == X))
-                and (self.y is not None and self.y.shape == y.shape and np.all(self.y == y))
-                and self.weights_i is not None
-                and self.biases is not None
-                and not (weights_changed or weights_i is None)
-                and not (biases_changed or biases is None)):
-            return self
+        # if ((self.x is not None and self.x.shape == X.shape and np.all(self.x == X))
+        #         and (self.y is not None and self.y.shape == y.shape and np.all(self.y == y))
+        #         and self.weights_i is not None
+        #         and self.biases is not None
+        #         and not (weights_changed or weights_i is None)
+        #         and not (biases_changed or biases is None)):
+        #     return self
 
         # this part is to ensure rng is reset in each state, running through same call every run
         self.rng = np.random.default_rng(self.random_state)
@@ -72,20 +75,13 @@ class ELMclf:
         self.hidden_mat = H
 
         beta = ELMclf._obtain_beta(y, H, self.l2_param)
-        self.weights_o = beta
+        self.weights_o = beta.ravel()
         return self
 
     def predict(self, X:np.ndarray):
         out_net = np.matmul(self._obtain_H(X),self.weights_o)
-        out_threshold = out_net
-        # print(out_net)
-
-        # this assumes binary label of 0 and 1
-        # out_threshold = np.vectorize(self.activation)(out_threshold) # for sigmoid
-        out_threshold[out_threshold > 0.5] = 1
-        out_threshold[out_threshold <= 0.5] = 0
-        # out_threshold[out_threshold == -0] = 0 # convert all zeros to +0
-        return out_threshold
+        return (out_net > 0.5).astype(int)
+        # return out_threshold
 
     def predict_proba(self, X:np.ndarray):
         # only one output node for binary
@@ -113,7 +109,7 @@ class ELMclf:
         # rng = np.random.default_rng(self.random_state)
         # input_weights = self.rng.random((self.n, x_size))
         input_weights = self.rng.uniform(-1,1,size=(self.n,x_size)) # Originally using 0-1
-        return input_weights
+        return input_weights.view()
 
     def _init_biases(self):
         """
@@ -122,7 +118,7 @@ class ELMclf:
         # rng = np.random.default_rng(self.random_state)
         # bias_weights = self.rng.random(self.n)
         bias_weights = self.rng.uniform(-1,1,size=self.n)
-        return bias_weights
+        return bias_weights.ravel()
 
         # random.seed()  # reset seed after operation
 
@@ -132,6 +128,8 @@ class ELMclf:
         :param x_train: instances to be trained, expects x_train of 'x_size' number of features
         :return: hidden layer output matrix, H
         """
+        # x_train = x_train.view()
+        # weights_i = self.weights_i.view()
         n_samples = x_train.shape[0]  # N
         n_features = x_train.shape[1] # x_size of init_weights
         expected_n_features = self.weights_i.shape[1] # previously declared
@@ -144,7 +142,7 @@ class ELMclf:
         # Finally, apply activation function, g(w.x + b)
         H = self.activation(H)
         # self.hidden_mat = H # set at fit
-        return H
+        return H.view()
 
     def _update_H(self, x_train:np.ndarray, prev_input_weights:np.ndarray, prev_biases:np.ndarray):
         """
@@ -160,7 +158,7 @@ class ELMclf:
         if n_features != expected_n_features:
             raise Exception(f'Number of features does not match previously declared value: {expected_n_features}')
         # First substep of H: w.x
-        f = lambda i, j: np.dot(self.weights_i[int(j)], x_train[int(i)])
+        f = lambda i, j: self.weights_i[int(j)] @ x_train[int(i)]
         H = np.fromfunction(np.vectorize(f), (n_samples, self.n), dtype=self.weights_i.dtype)
 
     def return_args(self):
@@ -187,21 +185,23 @@ class ELMclf:
         :return: output weights, which is also stored in object
         """
         # Error handling (>2D array is not handled)
+        y_train = y_train.ravel()
+        # H = H.view()
         n_samples = y_train.shape[0]
         expected_n_samples = H.shape[0]
         if n_samples != expected_n_samples:
             raise Exception(f'Number of samples does not match previously given x_train: {expected_n_samples}')
 
         # Update y_train if it is 1D to fit the formula
-        y_train_dup = to2D(y_train)
+        y_train_dup = to2D(y_train).view()
 
         # Either (H^+)T or ((lambda.I + (H^T)H)^+)(H^T)T
         if l2_param is None or l2_param == 0:
             # Obtain Moore-Penrose generalised inverse
-            H_plus = np.linalg.pinv(H)
+            H_plus = np.linalg.pinv(H).view()
 
             # Calculate output weights
-            output_weights = np.matmul(H_plus, y_train_dup)
+            output_weights = H_plus @ y_train_dup
             # self.weights_o = output_weights # set at fit
         else:
             H_transpose = H.T
@@ -210,10 +210,11 @@ class ELMclf:
             # then use (H^T)((lambda.I + H(H^T))^+)T
             if H.shape[0] < H.shape[1]:
                 ridge_mat = l2_param * np.identity(H.shape[0]) + H @ H_transpose
-                inv_ridge_mat = np.linalg.pinv(ridge_mat)
+                inv_ridge_mat = np.linalg.pinv(ridge_mat).view()
                 output_weights = H_transpose @ inv_ridge_mat @ y_train_dup
             else:
                 ridge_mat = l2_param * np.identity(H.shape[1]) + H_transpose @ H
-                inv_ridge_mat = np.linalg.pinv(ridge_mat)
+                inv_ridge_mat = np.linalg.pinv(ridge_mat).view()
                 output_weights = inv_ridge_mat @ H_transpose @ y_train_dup
-        return output_weights
+        return output_weights.ravel()
+
