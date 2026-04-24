@@ -66,8 +66,6 @@ class Optimiser:
         self.y_train = None # can be overwritten
         self.x_test  = None # can be overwritten
         self.y_test  = None # can be overwritten
-        self.x       = None
-        self.y       = None # unused now
 
         self.fitness_fn   = fitness_fn
         self.random_state = random_state
@@ -96,33 +94,18 @@ class Optimiser:
         return te_score
     def cross_eval(self, args : dict, index : int = 0, cv: int = 5, ret_train : bool = False) -> np.floating | tuple[np.floating, np.floating]:
         if not ret_train:
-            if self.cv_on_train:
-                return np.mean(cross_val_score(
-                    self.models[index],
-                    self.x_train,
-                    self.y_train,
-                    scoring=self.fitness_fn, cv=cv, args=args, ret_train=ret_train))
-            else:
-                # THIS SHOULD NOT BE USED, this only stays for legacy purposes
-                return np.mean(cross_val_score(
-                    self.models[index],
-                    self.x,
-                    self.y,
-                    scoring=self.fitness_fn, cv=cv, args=args, ret_train=ret_train))
-        if self.cv_on_train:
-            # then test is actually validation score within the training
-            train, test = cross_val_score(
+            return np.mean(cross_val_score(
                 self.models[index],
                 self.x_train,
                 self.y_train,
-                scoring=self.fitness_fn, cv=cv, args=args, ret_train=ret_train)
-        else:
-            # THIS SHOULD NOT BE USED, this only stays for legacy purposes
-            train, test = cross_val_score(
-                    self.models[index],
-                    self.x,
-                    self.y,
-                    scoring=self.fitness_fn, cv=cv, args=args, ret_train=ret_train)
+                scoring=self.fitness_fn, cv=cv, args=args, ret_train=ret_train))
+
+        # then test is actually validation score within the training
+        train, test = cross_val_score(
+            self.models[index],
+            self.x_train,
+            self.y_train,
+            scoring=self.fitness_fn, cv=cv, args=args, ret_train=ret_train)
         return np.mean(train), np.mean(test)
     def score(self):
         if self.best_individual is None or self.best_idx is None:
@@ -237,8 +220,6 @@ class ABCOptimiser(Optimiser):
         self.y_train = y_train.ravel() # can be overwritten
         self.x_test  = x_test.view()  # can be overwritten
         self.y_test  = y_test.ravel()  # can be overwritten
-        self.x       = np.concat([x_train, x_test])
-        self.y       = np.concat([y_train, y_test])
         if len(population) < 1:
             pass
 
@@ -306,9 +287,11 @@ class ABCOptimiser(Optimiser):
                     '\r',
                     f'Iter {current_iter}/{max_iter}: {end_time - start_time:.4f} s |',
                     f'Avg time: {total_time / current_iter:.4f} s |',
-                    f'Best validation: {self.compute_fitness(self.best_individual, self.best_idx):.4f} |',
-                    f'Best cross_val: {self.cross_eval(self.best_individual, self.best_idx, cv=5, ret_train=False):.4f}, idx: {self.best_idx} |',
-                    f'Solutions: {len(self.scores.ravel())}',
+                    f'Best score now: {self.best_score:.4f} |',
+                    # f'Best validation: {self.compute_fitness(self.best_individual,self.best_idx):.4f} |',
+                    # f'Best cross_val: {self.cross_eval(self.best_individual, self.best_idx,cv=5,ret_train=False):.4f}, idx: {self.best_idx} |',
+                    f'Solutions: {len(self.scores.ravel())} |',
+                    f'train_size: {self.x_train.shape}',
                     end='')
                 continue
 
@@ -425,13 +408,15 @@ class ABCOptimiser(Optimiser):
                 '\r',
                 f'Iter {current_iter}/{max_iter}: {end_time - start_time:.4f} s |',
                 f'Avg time: {total_time / current_iter:.4f} s |',
-                f'Best validation: {self.compute_fitness(self.best_individual,self.best_idx):.4f} |',
-                f'Best cross_val: {self.cross_eval(self.best_individual, self.best_idx,cv=5,ret_train=False):.4f}, idx: {self.best_idx} |',
-                f'Solutions: {len(self.scores.ravel())}',
+                f'Best score now: {self.best_score:.4f} |',
+                # f'Best validation: {self.compute_fitness(self.best_individual,self.best_idx):.4f} |',
+                # f'Best cross_val: {self.cross_eval(self.best_individual, self.best_idx,cv=5,ret_train=False):.4f}, idx: {self.best_idx} |',
+                f'Solutions: {len(self.scores.ravel())} |',
+                f'train_size: {self.x_train.shape}',
                 end='')
 
 
-        if self.verbose: print(f'\nBest score recorded: {self.best_score}, at idx: {self.best_idx}, total time: {total_time:.4f} seconds')
+        if self.verbose: print(f'\nBest score: {self.best_score}, total time: {total_time:.4f} seconds')
         # self.best_individual
         # self.best_idx
         # if self.verbose: print(f'Best score: {self.compute_fitness(self.best_individual,self.best_idx)}, idx: {self.best_idx}, ')

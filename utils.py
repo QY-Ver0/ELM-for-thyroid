@@ -79,7 +79,12 @@ def cross_val_score(estimator, X, y=None,
         # for abc to work here too
         x_train_sub, x_validate, y_train_sub, y_validate = None, None, None, None
         if val_size is not None:
-            x_train_sub, x_validate, y_train_sub, y_validate = train_test_split(x_train, y_train, test_size=val_size, random_state=random_state, stratify=y_train)
+            # if cv is not 1, validate can just be same as test
+            # since it is not used in optimisation at all if cv != 1
+            if args is not None and 'cv' in args and args['cv'] != 1:
+                x_train_sub, x_validate, y_train_sub, y_validate = x_train, x_test, y_train, y_test
+            else:
+                x_train_sub, x_validate, y_train_sub, y_validate = train_test_split(x_train, y_train, test_size=val_size, random_state=random_state, stratify=y_train)
 
         if args:
             if val_size is not None:
@@ -106,11 +111,12 @@ def cross_val_score(estimator, X, y=None,
         # for optimisers
         if ret_graph_df:
             train_res_i = estimator.train_res
-            val_res_i   = estimator.test_res
+            vali_res    = estimator.vali_res
+            test_res    = estimator.test_res
             scouts_cnt  = estimator.lim_reached_cnts
 
             # append DataFrame list
-            tt_df = pd.DataFrame([train_res_i, val_res_i, scouts_cnt], index=['Train', 'Validation', 'ScoutCall'])
+            tt_df = pd.DataFrame([train_res_i, vali_res, test_res, scouts_cnt], index=['Train', 'Validation', 'Test', 'ScoutCall'])
             tt_df = tt_df.transpose()
             iters = range(1, tt_df.shape[0] + 1)
             tt_df.insert(0, 'Iters', iters)
@@ -245,7 +251,7 @@ def train_test_graph(train_res,test_res,scout_call):
     fig.tight_layout()
     return fig, tt_df
 
-def train_test_graph_multiseed_2(tt_df):
+def train_test_graph_multiseed_2(tt_df, use_test=False):
     # average of variance of folds for ech model
     group = tt_df.groupby(['Seed', 'Iters'], as_index=False)
     avg_seed_df = group.mean()
@@ -255,8 +261,11 @@ def train_test_graph_multiseed_2(tt_df):
     avg_df = avg_sub_std_df.groupby(['Iters'], as_index=False).mean() # avg of models
     std_df = avg_sub_std_df.groupby(['Iters'], as_index=False).std()  # std of that
     fig, (ax_up, ax_down) = plt.subplots(2, 1, gridspec_kw={'height_ratios': [4, 1]})
+
+    valname = 'Test' if use_test else 'Validation'
+
     avg_df.plot.line('Iters', 'Train', color='orange', ax=ax_up)
-    avg_df.plot.line('Iters', 'Validation', color='cyan', ax=ax_up)
+    avg_df.plot.line('Iters', valname, color='cyan', ax=ax_up)
     avg_df.plot.line('Iters', 'ScoutCall', color='grey', ax=ax_down)
 
     ax_up.set_xlabel('')
@@ -266,31 +275,36 @@ def train_test_graph_multiseed_2(tt_df):
                        avg_df['Train'] + std_df['Train'],
                        alpha=0.2, color='orange', label='Train_std')
     ax_up.fill_between(avg_df['Iters'],
-                       avg_df['Validation'] - std_df['Validation'],
-                       avg_df['Validation'] + std_df['Validation'],
+                       avg_df[valname] - std_df[valname],
+                       avg_df[valname] + std_df[valname],
                        alpha=0.2, color='cyan', label='Validation_std')
 
     ax_down.minorticks_on()
     ax_down.grid(which='minor', axis='y', linestyle='--', linewidth=0.4)
 
-    print(f'Final Validation Std: {std_df.iloc[-1]['Validation']}')
+    print(f'Final Validation Std: {std_df.iloc[-1][valname]}')
     print(f'Final Train Std: {std_df.iloc[-1]['Train']}')
     fig.tight_layout()
     # fig.legend()
     return fig, avg_df
-def train_test_graph_multiseed(tt_df):
+def train_test_graph_multiseed(tt_df, use_test=False):
     # average of variance per fold of performance in each model (seed)
     group = tt_df.groupby(['Fold', 'Iters'], as_index=False)
     avg_fold_df = group.mean()
     std_fold_df = group.std()
-    return train_test_graph_2(avg_fold_df, std_fold_df)
-def train_test_graph_2(avg_fold_df, std_fold_df):
+    return train_test_graph_2(avg_fold_df, std_fold_df, use_test)
+def train_test_graph_2(avg_fold_df, std_fold_df, use_test=False):
     avg_df = avg_fold_df.groupby(['Iters'], as_index=False).mean().drop(['Seed'], axis=1)
-    std_df = std_fold_df.groupby(['Iters'], as_index=False).mean().drop(['Seed'], axis=1)
+    # std_df = std_fold_df.groupby(['Iters'], as_index=False).mean().drop(['Seed'], axis=1)
+    std_df = avg_fold_df.groupby(['Iters'], as_index=False).std()
+
+    valname = 'Test' if use_test else 'Validation'
+    # if use_test: avg_df.rename(columns={'Test': 'Validation'}, inplace=True)
+    # valname = 'Validation'
 
     fig, (ax_up, ax_down) = plt.subplots(2, 1, gridspec_kw={'height_ratios': [4, 1]})
     avg_df.plot.line('Iters', 'Train', color='orange', ax=ax_up)
-    avg_df.plot.line('Iters', 'Validation', color='cyan', ax=ax_up)
+    avg_df.plot.line('Iters', valname, color='cyan', ax=ax_up)
     avg_df.plot.line('Iters', 'ScoutCall', color='grey', ax=ax_down)
 
     ax_up.set_xlabel('')
@@ -300,13 +314,13 @@ def train_test_graph_2(avg_fold_df, std_fold_df):
                        avg_df['Train'] + std_df['Train'],
                        alpha=0.2, color='orange', label='Train_std')
     ax_up.fill_between(avg_df['Iters'],
-                       avg_df['Validation'] - std_df['Validation'],
-                       avg_df['Validation'] + std_df['Validation'],
+                       avg_df[valname] - std_df[valname],
+                       avg_df[valname] + std_df[valname],
                        alpha=0.2, color='cyan', label='Validation_std')
 
     ax_down.minorticks_on()
     ax_down.grid(which='minor', axis='y', linestyle='--', linewidth=0.4)
-    print(f'Final Validation Std: {std_df.iloc[-1]['Validation']}')
+    print(f'Final Validation Std: {std_df.iloc[-1][valname]}')
     print(f'Final Train Std: {std_df.iloc[-1]['Train']}')
     fig.tight_layout()
     return fig
