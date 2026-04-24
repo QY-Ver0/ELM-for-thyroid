@@ -62,22 +62,22 @@ class Optimiser:
         self.best_idx        = None
         self.models          = models
 
-        # self.x_train = x_train # can be overwritten
-        # self.y_train = y_train # can be overwritten
-        # self.x_test  = x_test  # can be overwritten
-        # self.y_test  = y_test  # can be overwritten
         self.x_train = None # can be overwritten
         self.y_train = None # can be overwritten
         self.x_test  = None # can be overwritten
         self.y_test  = None # can be overwritten
         self.x       = None
-        self.y       = None
+        self.y       = None # unused now
 
         self.fitness_fn   = fitness_fn
         self.random_state = random_state
 
         self.train_res = []
-        self.test_res  = [] # or validation, depends on what is obtained
+        self.vali_res  = [] # or validation, depends on what is obtained
+        self.test_res  = [] # validation is for cv_validation, test is for validation
+        # when cv_on_train False, vali and test is same
+
+        self.cv_on_train = False
     def predict(self, x):
         x = x.view()
         return self.models[self.best_idx].predict(x)
@@ -96,17 +96,33 @@ class Optimiser:
         return te_score
     def cross_eval(self, args : dict, index : int = 0, cv: int = 5, ret_train : bool = False) -> np.floating | tuple[np.floating, np.floating]:
         if not ret_train:
-            return np.mean(cross_val_score(
+            if self.cv_on_train:
+                return np.mean(cross_val_score(
+                    self.models[index],
+                    self.x_train,
+                    self.y_train,
+                    scoring=self.fitness_fn, cv=cv, args=args, ret_train=ret_train))
+            else:
+                # THIS SHOULD NOT BE USED, this only stays for legacy purposes
+                return np.mean(cross_val_score(
+                    self.models[index],
+                    self.x,
+                    self.y,
+                    scoring=self.fitness_fn, cv=cv, args=args, ret_train=ret_train))
+        if self.cv_on_train:
+            # then test is actually validation score within the training
+            train, test = cross_val_score(
                 self.models[index],
-                self.x,
-                self.y,
-                scoring=self.fitness_fn, cv=cv, args=args, ret_train=ret_train))
-
-        train, test = cross_val_score(
-                self.models[index],
-                self.x,
-                self.y,
+                self.x_train,
+                self.y_train,
                 scoring=self.fitness_fn, cv=cv, args=args, ret_train=ret_train)
+        else:
+            # THIS SHOULD NOT BE USED, this only stays for legacy purposes
+            train, test = cross_val_score(
+                    self.models[index],
+                    self.x,
+                    self.y,
+                    scoring=self.fitness_fn, cv=cv, args=args, ret_train=ret_train)
         return np.mean(train), np.mean(test)
     def score(self):
         if self.best_individual is None or self.best_idx is None:
@@ -168,10 +184,23 @@ class ABCOptimiser(Optimiser):
         self.lim_reached_cnts    = None
 
         self.best_solution       = None
+        self.solutions           = np.nan
+        self.scores              = np.nan
         self.best_score          = 0
         self.train_score         = 0
+        self.test_score          = 0
+
+        # legacy
         self.max_copy            = None
         self.min_copy            = None
+
+        # IWO-inspired
+        self.nmi                 = None # nonlinear modulation index, usually 3
+        self.max_change          = None
+        self.min_change          = None
+        self.final_sigma         = None
+        self.initial_sigma       = None
+
         self.max_iter            = None
         self.POPULATION_LIMIT    = None
         self.POPULATION_TEMPLATE = None
@@ -179,17 +208,30 @@ class ABCOptimiser(Optimiser):
         self.TRIAL_LIMIT         = None
         self.verbose             = False
 
+        self.employed_use_legacy = True
+        self.onlooker_use_legacy = True
         # legacy for original, False for IWO-inspired
 
     def set_verbose(self, to_verbose: bool):
         self.verbose = to_verbose
 
-    def fit(self, x_train, y_train, x_test, y_test, population: list[dict], population_limit: dict, max_iter: int = 1000, trial_limit = 10, min_copy = 0, max_copy = 1, cv=1):
+    def fit(self,
+            x_train, y_train, x_test, y_test,
+            population: list[dict], population_limit: dict,
+            max_iter: int = 1000, trial_limit = 10,
+            min_copy = 0, max_copy = 1,
+            initial_sigma = 0, final_sigma = 1,
+            min_change = 0, max_change = 1,
+            nmi = 3,
+            employed_use_legacy = True, onlooker_use_legacy = True,
+            cv=1, cv_on_train=False):
+        self.cv_on_train = cv_on_train
         self.best_individual = None # The best param settings
         self.best_idx        = None
 
         self.lim_reached_cnts = []
         self.train_res        = []
+        self.vali_res         = []
         self.test_res         = [] # or validation, depends on what is obtained
         self.x_train = x_train.view() # can be overwritten
         self.y_train = y_train.ravel() # can be overwritten
@@ -205,8 +247,6 @@ class ABCOptimiser(Optimiser):
         self.best_solution       = None
         self.best_score          = 0
         self.train_score         = 0
-        self.max_copy            = max_copy
-        self.min_copy            = min_copy
         self.max_iter            = max_iter
         self.POPULATION_LIMIT    = population_limit # aka param_ranges
         self.POPULATION_TEMPLATE = population[0]
@@ -214,93 +254,125 @@ class ABCOptimiser(Optimiser):
         self.TRIAL_LIMIT         = trial_limit
 
         rng = np.random.default_rng(self.random_state)
-
-        solutions = np.concatenate(tuple(map(lambda x: x.reshape(1,-1), map(as_solution, population)))).view()  # of shape (SN, D)
-        if cv == 1:
-            tr_te_scores = np.array([list(self.compute_fitness(population, i, True)) for i, population in enumerate(population)])
-            # train_scores = np.array([tr_te_scores[i][0] for i in range(len(tr_te_scores))])
-            # scores = [tr_te_scores[i][1] for i in range(len(tr_te_scores))]
-            train_scores = np.array(tr_te_scores[:,0])
-            scores = np.array(tr_te_scores[:,1])
-            # scores = [self.compute_fitness(population,i) for i,population in enumerate(population)]
-        else:
-            tr_te_scores = np.array([list(self.cross_eval(population, i, cv, True)) for i, population in enumerate(population)])
-            # train_scores = [tr_te_scores[i][0] for i in range(len(tr_te_scores))]
-            # scores = [tr_te_scores[i][1] for i in range(len(tr_te_scores))]
-            train_scores = np.array(tr_te_scores[:,0])
-            scores = np.array(tr_te_scores[:,1])
-            # scores = [self.cross_eval(population,i, cv) for i,population in enumerate(population)]
-        # scores = list(map(self.compute_fitness, population))
         f_ss_idx = np.vectorize(lambda i: rng.choice(indexes.ravel()[indexes.ravel() != i]))
 
-        SN, D = solutions.shape
+        # legacy
+        self.max_copy = max_copy
+        self.min_copy = min_copy
+
+        # IWO-inspired
+        self.nmi                 = nmi # nonlinear modulation index, usually 3
+        self.max_change          = max_change
+        self.min_change          = min_change
+        self.final_sigma         = final_sigma
+        self.initial_sigma       = initial_sigma
+
+        self.employed_use_legacy = employed_use_legacy
+        self.onlooker_use_legacy = onlooker_use_legacy
+
+        self.solutions = np.concatenate(tuple(map(lambda x: x.reshape(1,-1), map(as_solution, population)))).view()  # of shape (SN, D)
+
+        if cv == 1:
+            tr_te_scores = np.array([list(self.compute_fitness(population, i, True)) for i, population in enumerate(population)])
+            train_scores = np.array(tr_te_scores[:,0])
+            self.scores = np.array(tr_te_scores[:,1])
+        else:
+            tr_te_scores = np.array([list(self.cross_eval(population, i, cv, True)) for i, population in enumerate(population)])
+            train_scores = np.array(tr_te_scores[:,0])
+            self.scores = np.array(tr_te_scores[:,1])
+
+        SN, D = self.solutions.shape
+
         indexes = np.arange(SN)
 
         total_time = 0.
         trials = np.repeat(0, SN)
         # trials = [0] * SN
         for current_iter in range(max_iter+1):
-            # only use current_iter of 1 to max_iter (inclusive)
-            if current_iter == 0: continue
-            if self.best_score >= 1: break
-
             # Timing purpose
             start_time = time.time()
+            # only use current_iter of 1 to max_iter (inclusive)
+            if current_iter == 0: continue
+            if self.best_score >= 1:
+                # break
+                self.train_res.append(self.train_score)
+                self.vali_res.append(self.best_score)
+                self.test_res.append(self.test_score)
+                self.lim_reached_cnts.append(0)
+
+                end_time = time.time()
+                total_time += end_time - start_time
+                if self.verbose: print(
+                    '\r',
+                    f'Iter {current_iter}/{max_iter}: {end_time - start_time:.4f} s |',
+                    f'Avg time: {total_time / current_iter:.4f} s |',
+                    f'Best validation: {self.compute_fitness(self.best_individual, self.best_idx):.4f} |',
+                    f'Best cross_val: {self.cross_eval(self.best_individual, self.best_idx, cv=5, ret_train=False):.4f}, idx: {self.best_idx} |',
+                    f'Solutions: {len(self.scores.ravel())}',
+                    end='')
+                continue
+
+
 
             # current p copy
             curr_p_copy = ABCOptimiser.get_p_copy(current_iter, max_iter, self.min_copy, self.max_copy)
+            curr_sigma  = ABCOptimiser.get_sigma (current_iter, max_iter, self.initial_sigma, self.final_sigma, self.nmi)
 
             # Employed bee process, single loop to check whether generated solution are better
             second_solutions_idxes = f_ss_idx(indexes).ravel()
-            # second_solutions = np.vectorize(lambda i: solutions[rng.choice(indexes[indexes != i])], otypes=[np.ndarray])(indexes)
-            second_solutions = solutions[second_solutions_idxes]
-            vs = [self.neighbourhood_gen(solutions[i], second_solutions[i], curr_p_copy, rng) for i in indexes]
+            # second_solutions = np.vectorize(lambda i: self.solutions[rng.choice(indexes[indexes != i])], otypes=[np.ndarray])(indexes)
+            second_solutions = self.solutions[second_solutions_idxes]
+            vs = [self.neighbourhood_gen(self.solutions[i], second_solutions[i], curr_p_copy, curr_sigma, self.scores.ravel()[i], rng, True) for i in indexes]
             for i in indexes:
                 idx = int(i)
-                v = vs[idx]
+                v = vs[idx].ravel()
                 # Skip if Si is same as Vi
-                v_solution = as_solution(v)
-                if np.all(v_solution == solutions[i]):
+                # v_solution = as_solution(v)
+                v_solution = v
+                if np.all(v_solution == self.solutions[i]):
                     trials[i] += 1
                     # print(f'\t{i} Employed: Literally the same')
                     continue
+                v_param = as_params(v, self.PARAM_DIMS)
                 if cv == 1:
-                    v_tr_score, v_score = self.compute_fitness(v,idx,True)
+                    v_tr_score, v_score = self.compute_fitness(v_param,idx,True)
                 else:
-                    v_tr_score, v_score = self.cross_eval(v, idx, cv, True)
+                    v_tr_score, v_score = self.cross_eval(v_param, idx, cv, True)
                 # replace Si if Vi is better
-                if v_score > scores[idx]:
-                    solutions[i] = v_solution
-                    scores[idx] = v_score
+                if v_score > self.scores.ravel()[idx]:
+                    self.solutions[i] = v_solution
+                    self.scores.ravel()[idx] = v_score
                     train_scores[idx] = v_tr_score
                     trials[i] = 0
                 else:
                     trials[i] += 1
 
-            fitness_sum = np.sum(scores)
-            selection_probability = np.divide(scores, fitness_sum)
+            fitness_sum = np.sum(self.scores.ravel())
+            selection_probability = np.divide(self.scores.ravel(), fitness_sum)
             # Onlooker bee process
             solution_idxes = rng.choice(indexes, size=SN, p=selection_probability).ravel()
-            # selected_solutions = solutions[solution_idxes].view()
+            # selected_solutions = self.solutions[solution_idxes].view()
             second_solution_idxes = f_ss_idx(solution_idxes)
-            second_solutions = solutions[second_solution_idxes]
-            vs = [self.neighbourhood_gen(solutions[i], second_solutions[i], curr_p_copy, rng) for i in solution_idxes]
+            second_solutions = self.solutions[second_solution_idxes]
+            vs = [self.neighbourhood_gen(self.solutions[i], second_solutions[i], curr_p_copy, curr_sigma, self.scores.ravel()[i], rng, False) for i in solution_idxes]
             for i in indexes:
                 solution_idx = solution_idxes[i]
-                v = vs[i]
-                v_solution = as_solution(v)
-                if np.all(v_solution == solutions[solution_idx]):
+                v = vs[i].ravel()
+                # v_solution = as_solution(v)
+                v_solution = v
+                if np.all(v_solution == self.solutions[solution_idx]):
                     trials[solution_idx] += 1
                     # print(f'\t{i} Onlooker: Literally the same')
                     continue
+                v_param = as_params(v, self.PARAM_DIMS)
                 if cv == 1:
-                    v_tr_score, v_score = self.compute_fitness(v,solution_idx,True)
+                    v_tr_score, v_score = self.compute_fitness(v_param,solution_idx,True)
                 else:
-                    v_tr_score, v_score = self.cross_eval(v, solution_idx, cv, True)
+                    v_tr_score, v_score = self.cross_eval(v_param, solution_idx, cv, True)
                 # Replace Si if Vi is better
-                if v_score > scores[solution_idx]:
-                    solutions[solution_idx] = v_solution
-                    scores[solution_idx] = v_score
+                if v_score > self.scores.ravel()[solution_idx]:
+                    self.solutions[solution_idx] = v_solution
+                    self.scores.ravel()[solution_idx] = v_score
                     train_scores[solution_idx] = v_tr_score
                     trials[solution_idx] = 0
                 else:
@@ -309,16 +381,10 @@ class ABCOptimiser(Optimiser):
             # Scout bee process, find new source if score is not improving
             are_lim_reached = trials > (self.TRIAL_LIMIT-1) # a mask
             lim_reached_cnt = np.count_nonzero(are_lim_reached)
-            # if lim_reached_cnt > 0:
-            #     solutions[are_lim_reached] = Optimiser.population_generation(
-            #         lim_reached_cnt, self.POPULATION_TEMPLATE, self.POPULATION_LIMIT, int(rng.uniform(1, 4294967295))
-            #     )
-            #     print(solutions[are_lim_reached], '\n')
-            #     trials[are_lim_reached] = 0
             for i in indexes:
                 if trials[i] > self.TRIAL_LIMIT-1:
                     # if self.verbose: print(f'\t{i}: Update its solution')
-                    solutions[i] = as_solution(
+                    self.solutions[i] = as_solution(
                         Optimiser.population_generation(
                             1, self.POPULATION_TEMPLATE, self.POPULATION_LIMIT, int(rng.uniform(1, 4294967295))
                         )[0]
@@ -326,29 +392,31 @@ class ABCOptimiser(Optimiser):
                     trials[i] = 0
 
             # Save current best solution
-            current_best_idx = np.argmax(scores)
-            # if self.verbose: print(f"\tCurrent highest score: {scores[current_best_idx]}")
+            current_best_idx = np.argmax(self.scores.ravel())
+            # if self.verbose: print(f"\tCurrent highest score: {self.scores.ravel()[current_best_idx]}")
 
-            if scores[current_best_idx] > self.best_score:
-                self.best_individual = as_params(solutions[current_best_idx], self.PARAM_DIMS)
+            if self.scores.ravel()[current_best_idx] > self.best_score:
+                self.best_individual = as_params(self.solutions[current_best_idx], self.PARAM_DIMS)
                 self.best_idx = int(current_best_idx)
-                # if self.verbose: print(f"\tUpdated score: {scores[current_best_idx]}, idx: {current_best_idx}")
+                # if self.verbose: print(f"\tUpdated score: {self.scores.ravel()[current_best_idx]}, idx: {current_best_idx}")
                 # if self.verbose: print(f'\tBest test score : {self.compute_fitness(self.best_individual,self.best_idx)}, idx: {self.best_idx}')
                 # if self.verbose: print(f'\tBest cross score: {self.cross_eval(self.best_individual,self.best_idx,cv=cv,ret_train=False)}, idx: {self.best_idx}')
 
-                # t_score = self.compute_fitness(as_params(solutions[current_best_idx],self.PARAM_DIMS), int(current_best_idx)) if cv == 1 else self.cross_eval(as_params(solutions[current_best_idx], self.PARAM_DIMS), int(current_best_idx), cv, True)[0]
-                # self.best_score = copy.deepcopy(scores[current_best_idx])
-                self.best_score = scores[current_best_idx]
+                # t_score = self.compute_fitness(as_params(self.solutions[current_best_idx],self.PARAM_DIMS), int(current_best_idx)) if cv == 1 else self.cross_eval(as_params(self.solutions[current_best_idx], self.PARAM_DIMS), int(current_best_idx), cv, True)[0]
+                # self.best_score = copy.deepcopy(self.scores.ravel()[current_best_idx])
+                self.best_score = self.scores.ravel()[current_best_idx]
                 self.train_score = train_scores[current_best_idx]
+                self.test_score = self.compute_fitness(self.best_individual,self.best_idx)
 
             elif self.best_idx is None:
                 # sometimes it just happens
-                self.best_individual = as_params(solutions[current_best_idx], self.PARAM_DIMS)
+                self.best_individual = as_params(self.solutions[current_best_idx], self.PARAM_DIMS)
                 self.best_idx = int(current_best_idx)
 
             # set to train and test_res
             self.train_res.append(self.train_score)
-            self.test_res.append(self.best_score)
+            self.vali_res.append(self.best_score)
+            self.test_res.append(self.test_score)
             self.lim_reached_cnts.append(lim_reached_cnt)
 
             end_time = time.time()
@@ -359,7 +427,7 @@ class ABCOptimiser(Optimiser):
                 f'Avg time: {total_time / current_iter:.4f} s |',
                 f'Best validation: {self.compute_fitness(self.best_individual,self.best_idx):.4f} |',
                 f'Best cross_val: {self.cross_eval(self.best_individual, self.best_idx,cv=5,ret_train=False):.4f}, idx: {self.best_idx} |',
-                f'Solutions: {len(scores)}',
+                f'Solutions: {len(self.scores.ravel())}',
                 end='')
 
 
@@ -368,21 +436,39 @@ class ABCOptimiser(Optimiser):
         # self.best_idx
         # if self.verbose: print(f'Best score: {self.compute_fitness(self.best_individual,self.best_idx)}, idx: {self.best_idx}, ')
         return self.best_individual
-    def neighbourhood_gen(self, solution: np.ndarray, solution_k: np.ndarray, p_copy: int, rng):
+    def neighbourhood_gen(self, solution: np.ndarray, solution_k: np.ndarray, p_copy, sigma, score, rng, is_employed:bool):
         """
         Run with Variable Copy
         :return: dict, not ndarray
         """
+        if (is_employed and self.employed_use_legacy) or (not is_employed and self.onlooker_use_legacy):
+            return self.neighbourhood_gen_legacy(solution, solution_k, p_copy, rng)
+        else:
+            return self.neighbourhood_gen_IWO(solution, score, sigma, rng)
+
+    def neighbourhood_gen_legacy(self, solution: np.ndarray, solution_k: np.ndarray, p_copy: int, rng):
         # p_copy = ABCOptimiser.get_p_copy(curr_iter, self.max_iter, self.min_copy, self.max_copy)
         solution = solution.ravel()
         solution_k = solution_k.ravel()
         should_copy = rng.random(solution.shape) < p_copy # array of booleans
         phis = rng.uniform(-1, 1, solution.shape)
         res = np.where(should_copy, solution, solution + phis * (solution - solution_k))
+        return np.clip(res, -1, 1) # for now since limits are same, just this
         # clipping based on the limits
-        return ABCOptimiser.clip_to_ranges(as_params(res, self.PARAM_DIMS), self.POPULATION_LIMIT)
-    
-    
+        # return ABCOptimiser.clip_to_ranges(as_params(res, self.PARAM_DIMS), self.POPULATION_LIMIT)
+
+    def neighbourhood_gen_IWO(self, solution: np.ndarray, score, sigma, rng):
+        solution = solution.ravel()
+        D = solution.shape[0]
+        change_ratio = ABCOptimiser.get_change_ratio(self.best_score, score, self.min_change, self.max_change)
+        change_cnt   = np.ceil(D * change_ratio).astype(int) # original / 100 cuz it is percentage
+        change_cnt   = max(1, change_cnt) # small possibility of change even when change_cnt < 1
+        gaussian_additive = rng.normal(0, scale=sigma, size=change_cnt)
+        indexes = rng.choice(np.arange(D), size=change_cnt, replace=False)
+        res = solution.copy()
+        res[indexes] = np.clip(solution[indexes] + gaussian_additive, -1, 1)
+        return res.ravel()
+
     @staticmethod
     def clip_to_ranges(params: dict, ranges: dict) -> dict:
         if params.keys() != ranges.keys():
@@ -395,4 +481,23 @@ class ABCOptimiser(Optimiser):
         """
         Variable Copy
         """
-        return (max_copy - min_copy) * (curr_iter / max_iter) + min_copy
+        return (curr_iter / max_iter) * (max_copy - min_copy) + min_copy
+
+    @staticmethod
+    def get_sigma(curr_iter: int, max_iter: int, ini_sigma, final_sigma, nmi):
+        # difference for this ratio to p_copy is that p_copy increase as iter increase,
+        # this decrease as iter increase, and has a nmi to increase its speed of decay
+
+        # ini sigma should be larger than final
+        iter_ratio = (max_iter - curr_iter) / max_iter
+        iter_ratio = iter_ratio ** nmi
+
+        return iter_ratio * (ini_sigma - final_sigma) + final_sigma
+
+    @staticmethod
+    def get_change_ratio(highest_fit, this_fit, min_change, max_change):
+        # as fitness difference decrease, change decrease
+        # same idea as p_copy but this changes based on fitness of solutions available
+        if highest_fit == 0: fit_ratio = 1
+        else: fit_ratio = (highest_fit - this_fit) / highest_fit
+        return fit_ratio * (max_change - min_change) + min_change
