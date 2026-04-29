@@ -452,3 +452,14 @@ def format_metric_df(
             'specificity': 'TNR'}
     return (df.drop(drop, axis=1)
      .rename(columns=rename_dict))
+
+def subplot_txt(txt, ax=None, x=-0.1, y=1.07, fontsize='larger'):
+    param = dict(x=x, y=y, s=txt,
+                  ha='left', va='top',
+                  fontweight='bold',
+                  fontsize=fontsize)
+    if ax is not None:
+        param = param | dict(transform=ax.transAxes)
+    else:
+        ax = plt
+    return ax.text(**param)
