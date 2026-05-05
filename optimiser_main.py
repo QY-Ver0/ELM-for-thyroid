@@ -2,15 +2,11 @@
 from enum import Enum
 
 import numpy as np
-import pandas as pd
 from sklearn.metrics import accuracy_score
 import math
 import time
 
-from sklearn.model_selection import StratifiedKFold, KFold, train_test_split
-from sklearn.preprocessing import MinMaxScaler
-
-from utils import cross_val_score, get_metrics_df
+from utils import cross_val_score
 
 def get_dims(param_dict: dict[str, np.ndarray]) -> dict[str, tuple]:
     """
@@ -134,27 +130,27 @@ class Optimiser:
         for _ in range(population_size):
             individual = param_ranges.copy()
             for param in param_ranges:
-                min, max = param_ranges[param]
+                p_min, p_max = param_ranges[param]
                 param_type = type(param_templates[param])
                 # rng = np.random.default_rng(random_state)
 
                 if param_type is int or isinstance(param_templates[param], np.integer):
-                    individual[param] = rng.integers(min, max)
+                    individual[param] = rng.integers(p_min, p_max)
                 elif param_type is float or isinstance(param_templates[param], np.floating):
-                    individual[param] = rng.uniform(min, max)
+                    individual[param] = rng.uniform(p_min, p_max)
                 elif param_type is np.ndarray:
                     elem_example = param_templates[param].flatten()[0]
                     elem_type = param_templates[param].dtype
                     if elem_type is int or isinstance(elem_example, np.integer):
-                        individual[param] = rng.integers(min, max, size=param_templates[param].shape)
+                        individual[param] = rng.integers(p_min, p_max, size=param_templates[param].shape)
                     elif elem_type is float or isinstance(elem_example, np.floating):
-                        individual[param] = rng.uniform(min, max, size=param_templates[param].shape)
+                        individual[param] = rng.uniform(p_min, p_max, size=param_templates[param].shape)
                     else:
                         print('Unidentified value')
                         print(isinstance(elem_type, np.floating))
                         raise TypeError('Unidentified param type in array')
                 else:
-                    print(type(min))
+                    print(type(p_min))
                     raise TypeError('Unidentified value')
             population.append(individual)
         return population
@@ -372,6 +368,7 @@ class ABCOptimiser(Optimiser):
                             1, self.POPULATION_TEMPLATE, self.POPULATION_LIMIT, int(rng.uniform(1, 4294967295))
                         )[0]
                     )
+                    # self.scores[i] = self.cross_eval(as_params(self.solutions[i], self.PARAM_DIMS), i, cv, False)
                     trials[i] = 0
 
             # Save current best solution

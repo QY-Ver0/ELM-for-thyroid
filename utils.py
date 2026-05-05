@@ -310,9 +310,10 @@ def train_test_graph_multiseed_2(tt_df, use_test=False):
     # fig.legend()
     return fig, avg_df
 def train_test_graph_multiseed(
-        tt_df, use_test=False, first_avg_fold=False,
+        tt_df, use_test=False, first_avg_fold=False, use_which=None,
         xaxis_scale=None, yaxis_scale=None, y_lim=None, ylabel=None,
-        title=None, ax_up=None, ax_down=None, no_scoutcnt=False):
+        title=None, ax_up=None, ax_down=None, no_scoutcnt=False,
+        legend_size=None, label_size=None, title_size=None, tick_size=None):
     # NOT first_avg_fold: average of variance per fold of performance in each model (seed)
     # first_avg_fold    : average of variance per seed of performance in different data (fold)
     if not first_avg_fold:
@@ -334,12 +335,14 @@ def train_test_graph_multiseed(
         # avg_sub_std_df['ScoutCall'] = avg_seed_df['ScoutCall']
         std_df = std_seed_df
     return train_test_graph_2(
-        avg_sub_std_df, std_df, use_test,
-        xaxis_scale, yaxis_scale, y_lim, ylabel, title, ax_up, ax_down, no_scoutcnt)
+        avg_sub_std_df, std_df, use_test, use_which,
+        xaxis_scale, yaxis_scale, y_lim, ylabel, title, ax_up, ax_down, no_scoutcnt,
+        legend_size, label_size, title_size, tick_size)
 def train_test_graph_2(
-        avg_fold_df, std_fold_df, use_test=False,
+        avg_fold_df, std_fold_df, use_test=False, use_which=None,
         xaxis_scale=None, yaxis_scale=None, y_lim=None, ylabel=None,
-        title=None, ax_up=None, ax_down=None, no_scoutcnt=False):
+        title=None, ax_up=None, ax_down=None, no_scoutcnt=False,
+        legend_size=None, label_size=None, title_size=None, tick_size=None):
     avg_df = avg_fold_df.groupby(['Iters'], as_index=False).mean().drop(['Seed'], axis=1)
     # std_df = std_fold_df.groupby(['Iters'], as_index=False).mean().drop(['Seed'], axis=1)
     std_df = avg_fold_df.groupby(['Iters'], as_index=False).std()
@@ -353,10 +356,21 @@ def train_test_graph_2(
         'Test': upd_test_name,
         'ScoutCall': upd_scout_name})
 
-    train_color = 'orange'
-    vali_color  = 'dimgrey'
-    test_color  = 'cornflowerblue'
+    train_color = 'darkorange'
+    vali_color = 'grey'
+    test_color = 'cornflowerblue'
     scout_color = 'grey'
+
+    use_train, use_vali = True, True
+    if use_which is not None:
+        if 'Test' not in use_which: use_test = False
+        if 'Validation' not in use_which: use_vali = False
+        if 'Train' not in use_which: use_train = False
+    if not use_vali and use_test: test_color = test_color
+    elif use_vali and not use_test: vali_color = test_color
+    if not use_train and use_vali: vali_color = train_color
+    elif use_train and not use_vali: train_color = train_color
+
 
     fig = None
     row = 1 if no_scoutcnt else 2
@@ -366,27 +380,28 @@ def train_test_graph_2(
         else:
             fig, (ax_up, ax_down) = plt.subplots(row, 1, gridspec_kw={'height_ratios': [4, 1]})
 
-    for_plot.plot.line('Iters', 'Train', color=train_color, ax=ax_up)
-    for_plot.plot.line('Iters', upd_vali_name, color=vali_color, ax=ax_up)
+    if use_train: for_plot.plot.line('Iters', 'Train', color=train_color, ax=ax_up)
+    if use_vali: for_plot.plot.line('Iters', upd_vali_name, color=vali_color, ax=ax_up)
     if use_test: for_plot.plot.line('Iters', upd_test_name, color=test_color, ax=ax_up)
     if not no_scoutcnt: for_plot.plot.line('Iters', upd_scout_name, color=scout_color, ax=ax_down)
 
-    ax_up.fill_between(avg_df['Iters'],
+    if use_train: ax_up.fill_between(avg_df['Iters'],
                        avg_df['Train'] - std_df['Train'],
                        avg_df['Train'] + std_df['Train'],
-                       alpha=0.2, color=train_color, label='Train_std')
-    ax_up.fill_between(avg_df['Iters'],
+                       alpha=0.2, color=train_color, label='Train_SD')
+    if use_vali: ax_up.fill_between(avg_df['Iters'],
                        avg_df['Validation'] - std_df['Validation'],
                        avg_df['Validation'] + std_df['Validation'],
-                       alpha=0.2, color=vali_color, label=f'{upd_vali_name}_Std')
+                       alpha=0.2, color=vali_color, label=f'{upd_vali_name}_SD')
     if use_test: ax_up.fill_between(avg_df['Iters'],
                        avg_df['Test'] - std_df['Test'],
                        avg_df['Test'] + std_df['Test'],
-                       alpha=0.2, color=test_color, label=f'{upd_test_name}_Std')
+                       alpha=0.2, color=test_color, label=f'{upd_test_name}_SD')
 
 
     ax_up.margins(x=0.01, y=0.05) # top margin for legend
-    ax_up.set_ylabel(ylabel, fontweight='bold')
+    ax_up.set_xlabel(ax_up.get_xlabel(), fontsize=label_size)
+    ax_up.set_ylabel(ylabel, fontweight='bold', size=label_size)
 
     if xaxis_scale is not None:
         if xaxis_scale[0] is not None: ax_up.xaxis.set_major_locator(MultipleLocator(xaxis_scale[0]))
@@ -404,8 +419,9 @@ def train_test_graph_2(
     if not no_scoutcnt:
         ax_up.set_xlabel('')
         ax_up.tick_params(axis='x', labelbottom=False)
+    ax_up.tick_params(axis='both', labelsize=tick_size)
     ax_up.set_xlabel(ax_up.get_xlabel(), fontweight='bold')
-    ax_up.set_title(title, pad=30)
+    ax_up.set_title(title, pad=20, fontsize=title_size)
     if not no_scoutcnt:
         ax_down.margins(x=0.01, y=0.01)
         ax_down.set_xlabel(ax_down.get_xlabel(), fontweight='bold')
@@ -415,22 +431,29 @@ def train_test_graph_2(
         ax_down.grid(which='minor', axis='y', linestyle='--', linewidth=0.3)
         ax_down.grid(which='major', axis='y', linestyle='-', linewidth=0.5)
     if use_test: print(f'Final Test Std: {std_df.iloc[-1]['Test']}')
-    print(f'Final Validation Std: {std_df.iloc[-1]['Validation']}')
-    print(f'Final Train Std: {std_df.iloc[-1]['Train']}')
-    if use_test: print(f'Final Lower Test: {avg_df.iloc[-1]['Test']-std_df.iloc[-1]['Test']}')
-    print(f'Final Lower Vali: {avg_df.iloc[-1]['Validation']-std_df.iloc[-1]['Validation']}')
-    print(f'Final Lower Train: {avg_df.iloc[-1]['Train']-std_df.iloc[-1]['Train']}')
-    print(f'Final Train-Vali: {avg_df.iloc[-1]['Train']-avg_df.iloc[-1]['Validation']}')
+    # print(f'Final Validation Std: {std_df.iloc[-1]['Validation']}')
+    # print(f'Final Train Std: {std_df.iloc[-1]['Train']}')
+    # if use_test: print(f'Final Lower Test: {avg_df.iloc[-1]['Test']-std_df.iloc[-1]['Test']}')
+    # print(f'Final Lower Vali: {avg_df.iloc[-1]['Validation']-std_df.iloc[-1]['Validation']}')
+    # print(f'Final Lower Train: {avg_df.iloc[-1]['Train']-std_df.iloc[-1]['Train']}')
+    # print(f'Final Train-Vali: {avg_df.iloc[-1]['Train']-avg_df.iloc[-1]['Validation']}')
     if fig is not None: fig.tight_layout()
 
+    ncol = len(ax_up.get_legend_handles_labels()[1])
     legend_param = dict(
         fontsize='x-small',
         # bbox_to_anchor=(1.05, 1),
         # loc='best',
     )
+
+    bbox_y = -0.05 * ((ncol-1) // 4)
+    bbox_size = (0.5, -0.25 + bbox_y)
     up_param = legend_param | dict(
-        ncol=3,
-        bbox_to_anchor=(0.47,0.96),
+        ncol=min(ncol, 4),
+        loc='lower center',
+        frameon=False,
+        fontsize=legend_size,
+        bbox_to_anchor=bbox_size,
         bbox_transform=ax_up.transAxes,
     )
     down_param = legend_param
